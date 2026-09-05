@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{% block title %}Sightline{% endblock %}</title>
+<style>
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         color: #222; max-width: 960px; margin: 32px auto; padding: 0 24px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h1 a { color: inherit; text-decoration: none; }
+  h2.group { font-size: 15px; margin: 28px 0 4px; color: #444; font-weight: 600;
+             letter-spacing: 0.01em; }
+  a { color: #2a5eba; }
+  .sub { color: #888; font-size: 13px; margin: 0 0 20px; }
+  form.newscan { display: flex; gap: 8px; margin: 20px 0 8px; }
+  form.newscan input[type=text] { flex: 1; font: inherit; padding: 8px 10px;
+                                  border: 1px solid #bbb; border-radius: 4px; }
+  form.newscan button { font: inherit; padding: 8px 16px; border: 1px solid #2a5eba;
+                        background: #2a5eba; color: white; border-radius: 4px;
+                        cursor: pointer; }
+  .banner { border-left: 3px solid #8a1616; background: #fdf1f1; color: #7a1010;
+            padding: 8px 12px; margin: 16px 0; border-radius: 4px; }
+  table.scans { border-collapse: collapse; width: 100%;
+                font-variant-numeric: tabular-nums; }
+  table.scans td { padding: 5px 8px; border-top: 1px solid #eee; }
+  table.scans tr:first-child td { border-top: 1px solid #ccc; }
+  table.scans td.score { text-align: right; font-weight: 600; }
+  table.scans td.actions { text-align: right; white-space: nowrap; }
+  .status-pill { display: inline-block; padding: 0 8px; border-radius: 8px;
+                 background: #eee; color: #444; font-size: 12px; }
+  .status-pill.running { background: #fef7dc; color: #7a5a10; }
+  .status-pill.failed  { background: #fde1e1; color: #8a1616; }
+  .status-pill.complete { background: #e6f3e6; color: #2f6a3a; }
+  button.linklike { background: none; border: 0; padding: 0; color: #8a1616;
+                    cursor: pointer; font: inherit; text-decoration: underline; }
+  .muted { color: #888; }
+  footer { color: #aaa; font-size: 12px; margin-top: 48px; text-align: right; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<h1><a href="{{ url_for('index') }}">Sightline</a></h1>
+<p class="sub">Internal AEO/GEO/SEO diagnostic dashboard.</p>
+{% block content %}{% endblock %}
+<footer>weights: {{ weights_version|default('') }}</footer>
+</body>
+</html>

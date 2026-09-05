@@ -1,0 +1,8 @@
+[
+  {"name": "Otter Squad Plumbing", "domain": "ottersquadplumbing.com",
+   "category": "plumber", "city": "Allentown", "state": "PA",
+   "review_count": 64, "rating": 4.8},
+  {"name": "Lehigh Valley Roofing Co", "domain": "lvroofing.com",
+   "category": "roofing contractor", "city": "Bethlehem", "state": "PA",
+   "review_count": 112, "rating": 4.6}
+]

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Scan failed — Sightline{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('index') }}">← back to list</a></p>
+<h2 class="group">Scan #{{ scan.id }} failed</h2>
+<p><b>URL:</b> {{ scan.url }}</p>
+{% if scan.error %}<div class="banner">{{ scan.error }}</div>{% endif %}
+<p>
+  <form action="{{ url_for('delete', scan_id=scan.id) }}" method="post"
+        onsubmit="return confirm('Delete this failed scan?');">
+    <button type="submit" class="linklike">delete this scan</button>
+  </form>
+</p>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Scanning… — Sightline{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="5">{% endblock %}
+{% block content %}
+
+<p><a href="{{ url_for('index') }}">← back to list</a></p>
+<h2 class="group">Scanning {{ scan.url }}</h2>
+<p>Scan #{{ scan.id }} started at {{ scan.requested_at.strftime('%H:%M:%S UTC') }}.
+   PageSpeed Insights takes 30–60 seconds. This page auto-refreshes every 5 seconds.</p>
+<p class="muted">Status: <span class="status-pill running">{{ scan.status }}</span></p>
+
+{% endblock %}

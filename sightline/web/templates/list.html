@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+
+<form class="newscan" action="{{ url_for('new_scan') }}" method="post">
+  <input type="text" name="url" placeholder="https://example.com"
+         value="{{ prefill or '' }}" autofocus required>
+  <button type="submit">Run scan</button>
+</form>
+
+{% if error %}<div class="banner">{{ error }}</div>{% endif %}
+
+{% if not grouped %}
+  <p class="muted">No scans yet. Enter a URL above to run one.</p>
+{% endif %}
+
+{% for group in grouped %}
+  <h2 class="group">{{ group.domain }}</h2>
+  <table class="scans">
+    {% for s in group.scans %}
+    <tr>
+      <td style="width:140px">{{ s.requested_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td style="width:80px">
+        <span class="status-pill {{ s.status }}">{{ s.status }}</span>
+      </td>
+      <td>
+        <a href="{{ url_for('report', scan_id=s.id) }}">{{ s.url }}</a>
+        {% if s.status == 'failed' and s.error %}
+          <br><span class="muted" style="font-size:12px">{{ s.error }}</span>
+        {% endif %}
+      </td>
+      <td class="score" style="width:90px">
+        {% if s.status == 'complete' and s.score is not none %}
+          {{ '%.0f' % s.score }} / 100
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td class="actions" style="width:70px">
+        <form action="{{ url_for('delete', scan_id=s.id) }}" method="post"
+              style="display:inline"
+              onsubmit="return confirm('Delete scan {{ s.id }}?');">
+          <button type="submit" class="linklike">delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+{% endfor %}
+
+{% endblock %}
