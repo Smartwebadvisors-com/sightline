@@ -28,6 +28,12 @@ Three things about this schema drive the whole module:
 
 3. `remediation` is already-written fix advice. It goes straight into the gap
    report; there is nothing for us to phrase.
+
+4. `sightline_scans.seo_score` IS stored, unlike the AEO composite -- it is
+   measured from DataForSEO metrics rather than derived from findings, so
+   there is nothing to recompute here. Read it, don't rebuild it. NULL means
+   the scan predates the column or DataForSEO could not be reached; that is
+   not a zero.
 """
 
 from __future__ import annotations
@@ -82,7 +88,8 @@ MAX_UNAVAILABLE_RATIO = 0.34
 
 
 LATEST_SCAN_SQL = """
-SELECT id, url, domain, requested_at, completed_at, status, error, meta
+SELECT id, url, domain, requested_at, completed_at, status, error, meta,
+       seo_score, seo_metrics
 FROM   sightline_scans
 WHERE  (domain = %(domain)s OR url ILIKE %(like)s)
   AND  status = %(ok)s
@@ -187,6 +194,46 @@ def build_finding(row: dict[str, Any]) -> Finding:
     )
 
 
+def _seo_metrics(scan: dict[str, Any]) -> dict[str, Any]:
+    """sightline_scans.seo_metrics, tolerating a JSON string or NULL."""
+    raw = scan.get("seo_metrics")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        import json
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
+    return {}
+
+
+def read_seo_score(scan: dict[str, Any]) -> int | None:
+    """0-100, or None when the scan has no measured SEO score.
+
+    None is not a zero: it means the scan predates the column, DataForSEO
+    was unreachable, or no endpoint was authorized. Never coerce it to 0 --
+    that would read as 'this site has no organic presence', which is a
+    claim we would be making without evidence.
+    """
+    value = scan.get("seo_score")
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _seo_covered_weight(scan: dict[str, Any]) -> float | None:
+    value = _seo_metrics(scan).get("covered_weight")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def summarize_av(rows: Iterable[dict[str, Any]]) -> AVSummary:
     summary = AVSummary()
     for row in rows:
@@ -257,6 +304,19 @@ def build_report(
         passed = len([f for f in items if f.passed])
         pillar_scores[pillar] = int(round(100 * passed / len(items)))
 
+    # Sightline's stored SEO score. Read as-is: it is measured from
+    # DataForSEO metrics, not derived from the findings above, so it is
+    # deliberately free to disagree with aeo_score.
+    seo = read_seo_score(scan)
+    if seo is not None:
+        pillar_scores["seo"] = seo
+        partial = _seo_covered_weight(scan)
+        if partial is not None and partial < 1.0:
+            errors.append(
+                f"sightline_seo_partial: SEO score measured on "
+                f"{partial:.0%} of its inputs -- quote it with that caveat"
+            )
+
     av = summarize_av(av_rows or [])
 
     report = SiteReport(
@@ -269,6 +329,7 @@ def build_report(
         findings=findings,
         errors=errors,
         engine="sightline",
+        seo_score=seo,
         external_scan_id=str(scan.get("id")) if scan.get("id") is not None else None,
     )
     return report, av

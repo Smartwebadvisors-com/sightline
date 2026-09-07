@@ -347,6 +347,58 @@ check("a degraded audit will not auto-send", v2.status, "REVIEW")
 check("and says why", v2.rule, "AUDIT_INCOMPLETE")
 
 # --------------------------------------------------------------------------
+# The stored SEO score. Measured from DataForSEO, not derived from the
+# findings above, so the reader must pass it through untouched -- and must
+# keep "not measured" distinct from a measured zero.
+# --------------------------------------------------------------------------
+print()
+print("stored SEO score:")
+
+FINDINGS = [
+    finding("ai_crawler", "pass"),
+    finding("rank", "low", 2, item_key="backlinks"),
+]
+
+
+def scan_with(**kw):
+    return {**SCAN, **kw}
+
+
+r_scored, _ = build_report(
+    scan_with(seo_score=43.1, seo_metrics={"covered_weight": 1.0,
+                                           "version": "seo-v1"}),
+    FINDINGS)
+check("seo_score is read from the scan row", r_scored.seo_score, 43)
+check("and exposed as its own pillar", r_scored.pillar_scores.get("seo"), 43)
+check("a fully measured score raises no caveat",
+      any("seo_partial" in e for e in r_scored.errors), False)
+
+r_none, _ = build_report(scan_with(seo_score=None, seo_metrics={}), FINDINGS)
+check("an unmeasured score stays None", r_none.seo_score, None)
+check("and is NOT coerced to zero", r_none.pillar_scores.get("seo"), None)
+
+r_zero, _ = build_report(
+    scan_with(seo_score=0.0, seo_metrics={"covered_weight": 1.0}), FINDINGS)
+check("a measured zero survives as zero", r_zero.seo_score, 0)
+check("and is reported as a pillar", r_zero.pillar_scores.get("seo"), 0)
+
+r_partial, _ = build_report(
+    scan_with(seo_score=46.3, seo_metrics={"covered_weight": 0.55}), FINDINGS)
+check("a partial score is flagged for the pitch",
+      any("sightline_seo_partial" in e for e in r_partial.errors), True)
+
+# psycopg returns jsonb as a dict, but a row that came through row_to_json
+# or a cached payload can arrive as text.
+r_text, _ = build_report(
+    scan_with(seo_score=46.3, seo_metrics='{"covered_weight": 0.55}'),
+    FINDINGS)
+check("seo_metrics parses when handed back as JSON text",
+      any("sightline_seo_partial" in e for e in r_text.errors), True)
+
+check("the SEO score does not disturb the AEO score",
+      r_scored.aeo_score, r_none.aeo_score)
+
+# --------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")

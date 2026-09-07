@@ -42,3 +42,7 @@ class ScanContext:
     robots_status: int = 0
     llms_txt_fetch: Any = None
     sitemap_fetch: Any = None
+    # Raw DataForSEO metrics for the SEO score, stashed by checks/rank.py
+    # from the calls it already makes. See dataforseo.metrics_from().
+    # None means the rank check never ran.
+    seo_metrics: dict | None = None
