@@ -42,15 +42,23 @@ LOG = logging.getLogger("aeo.sightline.schema")
 
 SCAN_STATUS_OK = "complete"
 
-# Sightline's seven checks, grouped the way the gate reasons about them.
+# Sightline's checks grouped into its own v2 scoring dimensions -- the check
+# groupings and names mirror the `dimensions` map Sightline persists in
+# sightline_weight_versions (weight version "v2", the live default), so
+# pillar_scores speaks Sightline's vocabulary instead of a parallel one of ours.
+#
+# llms_txt is the exception: v2 demoted it to informational (zero deduction
+# weight) and gives it no dimension of its own. It still yields a finding, so
+# it is grouped under answer_first -- the dimension nearest to it -- to keep it
+# visible without inventing a dimension Sightline doesn't have.
 CHECK_PILLARS: dict[str, str] = {
-    "ai_crawler":          "crawlability",
-    "llms_txt":            "answerability",
-    "answer_first":        "answerability",
+    "ai_crawler":          "ai_accessibility",
     "structured_data":     "structured_data",
-    "entity_consistency":  "structured_data",
-    "rank":                "search",
+    "entity_consistency":  "entity_consistency",
+    "answer_first":        "answer_first",
+    "llms_txt":            "answer_first",
     "pagespeed":           "performance",
+    "rank":                "authority",
 }
 
 # Sightline severity -> ours. 'pass' and 'unavailable' are handled separately
