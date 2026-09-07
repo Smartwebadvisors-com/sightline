@@ -5,57 +5,20 @@ authorization. Rather than fail an entire scan when one endpoint is not
 covered, we probe each endpoint we intend to use with a tiny live call and
 emit severity='unavailable' findings for the ones that come back 40x. The
 prospect is never penalized for our tooling gap.
+
+This check also feeds the SEO score. It makes one extra call (Rank
+Overview) and stashes the raw numbers on ctx.seo_metrics; the pipeline
+scores them in scoring/seo.py. That call deliberately emits NO finding:
+the SEO score is a separate number, and adding findings here would shift
+the AEO composite's `authority` dimension as a side effect of building it.
+The audit trail for those numbers lives in sightline_scans.seo_metrics.
 """
 from __future__ import annotations
 
-import base64
-
-import requests
-
-from ..config import settings
+from .. import dataforseo as dfs
 from .base import Finding, ScanContext
 
 CHECK_ID = "rank"
-
-BASE = "https://api.dataforseo.com/v3"
-# Endpoints we depend on, tagged for clarity in evidence.
-DEP_KEYWORDS = "dataforseo_labs/google/ranked_keywords/live"
-# Backlinks Summary is the correct endpoint for backlink counts. The
-# earlier whois/overview endpoint is a WHOIS record whose backlinks/
-# referring_domains fields are almost always zero on our account tier —
-# not the actual backlink graph.
-DEP_BACKLINKS = "backlinks/summary/live"
-
-
-def _auth_header() -> dict[str, str] | None:
-    if not (settings.dataforseo_login and settings.dataforseo_password):
-        return None
-    token = base64.b64encode(
-        f"{settings.dataforseo_login}:{settings.dataforseo_password}".encode()
-    ).decode()
-    return {"Authorization": f"Basic {token}",
-            "Content-Type": "application/json"}
-
-
-def _call(endpoint: str, payload: list[dict], headers: dict[str, str]) -> dict:
-    try:
-        r = requests.post(f"{BASE}/{endpoint}", headers=headers,
-                          json=payload, timeout=settings.http_timeout * 3)
-        try:
-            body = r.json()
-        except ValueError:
-            body = {"_raw": r.text[:400]}
-        return {"http_status": r.status_code, "body": body}
-    except requests.RequestException as e:
-        return {"http_status": 0, "error": str(e)}
-
-
-def _task_status(body: dict) -> tuple[int | None, str]:
-    tasks = (body or {}).get("tasks") or []
-    if not tasks:
-        return None, "no tasks in response"
-    t = tasks[0]
-    return t.get("status_code"), (t.get("status_message") or "")
 
 
 def _unavailable(item_key: str, endpoint: str, reason: str,
@@ -73,10 +36,20 @@ def _unavailable(item_key: str, endpoint: str, reason: str,
     )
 
 
+def _status_evidence(res: dfs.DFSResult) -> dict:
+    return {"http_status": res.http_status, "task_status": res.task_status}
+
+
 def run(ctx: ScanContext) -> list[Finding]:
     findings: list[Finding] = []
-    headers = _auth_header()
+    headers = dfs.auth_header()
     if headers is None:
+        ctx.seo_metrics = dfs.metrics_from(
+            dfs.DFSResult(endpoint=dfs.EP_RANK_OVERVIEW,
+                          error="credentials not configured"),
+            dfs.DFSResult(endpoint=dfs.EP_BACKLINKS,
+                          error="credentials not configured"),
+        )
         return [Finding(
             check_id=CHECK_ID, item_key="unavailable",
             severity="unavailable",
@@ -88,29 +61,17 @@ def run(ctx: ScanContext) -> list[Finding]:
             ),
         )]
 
-    # Ranked keywords probe.
-    kw = _call(DEP_KEYWORDS, [{
-        "target": ctx.domain,
-        "language_code": "en",
-        "location_code": 2840,
-        "limit": 10,
-    }], headers)
-    kw_status, kw_msg = _task_status(kw.get("body", {}))
-    if kw.get("http_status") in (401, 402, 403) or kw_status in (40100, 40200, 40300):
+    # Ranked keywords probe. Supplies the keyword NAMES for the report;
+    # the SEO score takes its counts from Rank Overview instead so that
+    # top-10 can never exceed the total.
+    kw = dfs.ranked_keywords(ctx.domain, limit=10, headers=headers)
+    if not kw.ok:
         findings.append(_unavailable(
-            "endpoint:keywords", DEP_KEYWORDS,
-            f"HTTP {kw.get('http_status')} / task status {kw_status} ({kw_msg})",
-            {"http_status": kw.get("http_status"), "task_status": kw_status},
-        ))
-    elif kw.get("http_status") != 200 or kw_status not in (20000,):
-        findings.append(_unavailable(
-            "endpoint:keywords", DEP_KEYWORDS,
-            f"unexpected response HTTP {kw.get('http_status')} / task {kw_status} ({kw_msg})",
-            {"http_status": kw.get("http_status"), "task_status": kw_status},
+            "endpoint:keywords", dfs.EP_RANKED_KEYWORDS, kw.reason,
+            _status_evidence(kw),
         ))
     else:
-        result = ((kw["body"].get("tasks") or [{}])[0]
-                  .get("result") or [{}])[0] or {}
+        result = kw.result or {}
         items = result.get("items") or []
         total = result.get("total_count") or 0
         top = [{
@@ -169,27 +130,23 @@ def run(ctx: ScanContext) -> list[Finding]:
             evidence={"top": top},
         ))
 
+    # Rank Overview: the position distribution behind the SEO score. No
+    # finding either way — see the module docstring.
+    overview = dfs.rank_overview(ctx.domain, headers=headers)
+
     # Backlinks Summary probe.
-    bl = _call(DEP_BACKLINKS, [{"target": ctx.domain}], headers)
-    bl_status, bl_msg = _task_status(bl.get("body", {}))
-    if bl.get("http_status") in (401, 402, 403) or bl_status in (40100, 40200, 40300):
+    bl = dfs.backlinks_summary(ctx.domain, headers=headers)
+    if not bl.ok:
         findings.append(_unavailable(
-            "endpoint:backlinks", DEP_BACKLINKS,
-            f"HTTP {bl.get('http_status')} / task status {bl_status} ({bl_msg})",
-            {"http_status": bl.get("http_status"), "task_status": bl_status},
-        ))
-    elif bl.get("http_status") != 200 or bl_status not in (20000,):
-        findings.append(_unavailable(
-            "endpoint:backlinks", DEP_BACKLINKS,
-            f"unexpected response HTTP {bl.get('http_status')} / task {bl_status} ({bl_msg})",
-            {"http_status": bl.get("http_status"), "task_status": bl_status},
+            "endpoint:backlinks", dfs.EP_BACKLINKS, bl.reason,
+            _status_evidence(bl),
         ))
     else:
-        result = ((bl["body"].get("tasks") or [{}])[0]
-                  .get("result") or [{}])[0] or {}
+        result = bl.result or {}
         backlinks = int(result.get("backlinks") or 0)
         ref = int(result.get("referring_domains") or 0)
         ref_main = int(result.get("referring_main_domains") or 0)
+        domain_rank = int(result.get("rank") or 0)
 
         # Band by referring-domain count. Backlink volume alone is noisy
         # (one spammy source can inflate it); referring-domain count is the
@@ -228,7 +185,12 @@ def run(ctx: ScanContext) -> list[Finding]:
             remediation=remed,
             evidence={"backlinks": backlinks,
                       "referring_domains": ref,
-                      "referring_main_domains": ref_main},
+                      "referring_main_domains": ref_main,
+                      "domain_rank": domain_rank},
         ))
+
+    # Hand the raw numbers to the pipeline. Both endpoints are read here
+    # so a scan makes no extra calls for the SEO score.
+    ctx.seo_metrics = dfs.metrics_from(overview, bl)
 
     return findings

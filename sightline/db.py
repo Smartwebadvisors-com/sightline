@@ -50,6 +50,53 @@ def complete_scan(scan_id: int, status: str = "complete",
         c.commit()
 
 
+def set_seo_score(scan_id: int, score: float | None,
+                  metrics: dict) -> None:
+    """Persist the SEO score on the scan row. NULL score means 'not
+    measured' — never conflate it with a measured zero."""
+    with conn() as c:
+        c.execute(
+            """UPDATE sightline_scans
+                  SET seo_score = %s, seo_metrics = %s
+                WHERE id = %s""",
+            (score, Jsonb(metrics), scan_id),
+        )
+        c.commit()
+
+
+def set_seo_score_for_scans(scan_ids: Iterable[int], score: float | None,
+                            metrics: dict) -> int:
+    """Same, for every scan of one domain in a backfill. DataForSEO
+    measures a domain, not a URL, so one call covers all of them."""
+    ids = list(scan_ids)
+    if not ids:
+        return 0
+    with conn() as c:
+        c.execute(
+            """UPDATE sightline_scans
+                  SET seo_score = %s, seo_metrics = %s
+                WHERE id = ANY(%s)""",
+            (score, Jsonb(metrics), ids),
+        )
+        c.commit()
+    return len(ids)
+
+
+def domains_missing_seo_score() -> list[dict]:
+    """[{domain, scan_ids}] for completed scans with no SEO score yet,
+    grouped so the backfill buys one pair of API calls per domain."""
+    with conn() as c:
+        return c.execute(
+            """SELECT LOWER(domain) AS domain,
+                      ARRAY_AGG(id ORDER BY id) AS scan_ids
+                 FROM sightline_scans
+                WHERE status = 'complete' AND seo_score IS NULL
+                  AND COALESCE(domain, '') <> ''
+                GROUP BY LOWER(domain)
+                ORDER BY LOWER(domain)"""
+        ).fetchall()
+
+
 def write_findings(scan_id: int, findings: Iterable[Any]) -> int:
     """Idempotent per (scan_id, check_id, item_key)."""
     rows = [

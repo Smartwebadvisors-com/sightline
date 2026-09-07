@@ -27,6 +27,7 @@ from .checks.base import ScanContext
 from .fetch import discovery
 from .fetch import http as fetch_http
 from .scoring import apply as apply_mod
+from .scoring import seo as seo_mod
 from .scoring import weights as weights_mod
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,23 @@ def _build_context(url: str) -> ScanContext:
     return ctx
 
 
+def _score_seo(scan_id: int, ctx: ScanContext) -> dict | None:
+    """Score and persist the DataForSEO-sourced SEO number.
+
+    Independent of the AEO composite: it reads the raw metrics rank.py
+    stashed on the context, never a finding or a deduction. A failure
+    here does not fail the scan — the AEO result is complete and valid
+    on its own, the same way one crashing check doesn't void the rest.
+    """
+    try:
+        result = seo_mod.score(ctx.seo_metrics or {})
+        db.set_seo_score(scan_id, result["score"], result)
+        return result
+    except Exception:
+        log.exception("seo scoring failed for scan %s", scan_id)
+        return None
+
+
 def run_scan_for(scan_id: int, url: str,
                  progress: ProgressCallback | None = None) -> dict:
     try:
@@ -117,6 +135,7 @@ def run_scan_for(scan_id: int, url: str,
                 progress(mod.CHECK_ID, n)
         wv_id = register_current_weights()
         result = apply_mod.apply_to_scan(scan_id, weights_mod.snapshot(), wv_id)
+        result["seo"] = _score_seo(scan_id, ctx)
         db.complete_scan(scan_id, status="complete")
         return result
     except Exception as e:

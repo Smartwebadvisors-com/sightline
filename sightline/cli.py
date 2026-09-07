@@ -4,6 +4,7 @@ Commands:
   init-db                             create schema + register current weights
   scan <url>                          run all checks against a URL, score it
   rescore <scan_id|all> --version V   re-score history against a weight version
+  backfill-seo [--dry-run] [--limit N]  measure seo_score for older scans
   render <scan_id> [--out FILE]       write standalone HTML report
   history <domain>                    list recent scans for a domain
   av-sample <url> --model M --query Q --mentioned yes|no [--excerpt TEXT]
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from datetime import datetime, timezone
 
 from . import db
 from . import pipeline
@@ -60,7 +62,29 @@ def cmd_scan(args) -> None:
         label = (weights_mod.DIMENSION_LABELS.get(dim_id) or dim_id).ljust(22)
         val = f"{score:.1f}" if score is not None else "n/a"
         print(f"  {label} {val:>6}")
+    _print_seo(result.get("seo"))
     print(f"scan_id={scan_id}")
+
+
+def _print_seo(seo: dict | None) -> None:
+    """The SEO score is a separate number from the AEO composite above,
+    so it prints as its own block rather than as another dimension."""
+    print("")
+    if not seo:
+        print("seo: n/a (not scored)")
+        return
+    score = seo.get("score")
+    score_txt = f"{score:.1f}" if score is not None else "n/a"
+    covered = seo.get("covered_weight") or 0.0
+    suffix = "" if covered >= 1.0 else f", {covered:.0%} of weight measured"
+    print(f"seo: {score_txt} / 100  ({seo.get('version')}{suffix})")
+    for name, c in (seo.get("components") or {}).items():
+        label = (c.get("label") or name).ljust(22)
+        if c.get("score") is None:
+            print(f"  {label} {'n/a':>6}   not measured")
+            continue
+        print(f"  {label} {c['score']:>6}   "
+              f"{c.get('value')} (weight {c.get('weight')})")
 
 
 def cmd_rescore(args) -> None:
@@ -83,6 +107,53 @@ def cmd_rescore(args) -> None:
         overall_txt = f"{overall:>5.1f}" if overall is not None else "  n/a"
         print(f"  scan {sid:>4}: overall {overall_txt}  "
               f"(scored {cov.get('scored', 0)}/{cov.get('total', 0)})")
+
+
+def cmd_backfill_seo(args) -> None:
+    """Fill seo_score for completed scans that predate it.
+
+    One pair of DataForSEO calls per DISTINCT domain, applied to every
+    completed scan of that domain. Re-runnable: scans that already have a
+    score are skipped, so an interrupted run resumes where it stopped.
+    """
+    from . import dataforseo as dfs
+    from .scoring import seo as seo_mod
+
+    rows = db.domains_missing_seo_score()
+    if args.limit:
+        rows = rows[:args.limit]
+    if not rows:
+        print("no completed scans are missing an SEO score")
+        return
+
+    n_scans = sum(len(r["scan_ids"]) for r in rows)
+    print(f"{len(rows)} domain(s), {n_scans} scan(s) to backfill "
+          f"(~${len(rows) * 0.036:.2f} of DataForSEO calls)")
+    if args.dry_run:
+        for r in rows:
+            print(f"  {r['domain']:<40} scans {r['scan_ids']}")
+        print("dry run; nothing written")
+        return
+    if not dfs.configured():
+        print("DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD not set; nothing to "
+              "measure with", file=sys.stderr)
+        sys.exit(1)
+
+    for r in rows:
+        metrics = dfs.collect_seo_metrics(r["domain"])
+        result = seo_mod.score(metrics)
+        # A backfilled score is measured TODAY and attached to a scan from
+        # whenever. Stamp it so nobody later reads it as contemporaneous.
+        result["backfilled"] = True
+        result["measured_at"] = datetime.now(timezone.utc).isoformat()
+        n = db.set_seo_score_for_scans(r["scan_ids"], result["score"], result)
+        score = result["score"]
+        score_txt = f"{score:>5.1f}" if score is not None else "  n/a"
+        detail = ", ".join(
+            f"{k}={metrics.get(k)}" for k in seo_mod.COMPONENT_ORDER
+        )
+        print(f"  {r['domain'][:38]:<38} {score_txt}  "
+              f"({n} scan(s))  {detail}")
 
 
 def cmd_render(args) -> None:
@@ -205,6 +276,14 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--version", required=True,
                    help="weight version name to register/use")
     r.set_defaults(func=cmd_rescore)
+
+    bf = sub.add_parser("backfill-seo",
+        help="measure + store seo_score for completed scans missing one")
+    bf.add_argument("--dry-run", action="store_true",
+                    help="list what would be measured, spend nothing")
+    bf.add_argument("--limit", type=int, default=0,
+                    help="cap the number of domains (0 = no cap)")
+    bf.set_defaults(func=cmd_backfill_seo)
 
     ren = sub.add_parser("render")
     ren.add_argument("scan_id", type=int)
