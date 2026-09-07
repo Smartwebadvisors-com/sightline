@@ -241,7 +241,15 @@ def persist(results: Iterable[ScanResult], dsn: str | None = None) -> list[int]:
                     "site_raw": Jsonb(s.to_dict()),
                     "scan_errors": Jsonb(s.errors + (r.probe.errors if r.probe else [])),
                 })
-                scan_ids.append(cur.fetchone()[0])
+                scan_id = cur.fetchone()[0]
+                scan_ids.append(scan_id)
+
+                # Persist the per-query probe evidence behind this score.
+                # Shares the cursor -- and thus this transaction -- so the
+                # observations commit atomically with their scan; failures are
+                # logged inside write_observations, never raised.
+                from av_persist import write_observations
+                write_observations(cur, r.probe, p.registrable_domain(), scan_id)
         conn.commit()
     return scan_ids
 

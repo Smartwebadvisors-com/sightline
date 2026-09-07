@@ -64,7 +64,7 @@ check("remediation becomes the report line", r.detail,
       "Remove the GPTBot Disallow rule from robots.txt.")
 check("observed becomes evidence", r.evidence,
       "robots.txt line 4 disallows GPTBot")
-check("pillar mapped from check_id", r.pillar, "crawlability")
+check("pillar mapped from check_id (v2 dimension)", r.pillar, "ai_accessibility")
 check("recognised as the lead finding", is_lead_finding(r.id), True)
 
 check("detail falls back to observed when no remediation",
