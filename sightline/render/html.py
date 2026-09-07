@@ -3,7 +3,12 @@ prints cleanly. This is the artifact you hand to a prospect.
 
 Under v2 the headline is six per-dimension scores; the overall score is a
 smaller line beneath. Coverage is explicit so a scan with an unmeasured
-dimension doesn't read as if it just failed."""
+dimension doesn't read as if it just failed.
+
+The SEO score gets its own section rather than a seventh tile in the
+dimension grid. It is measured from DataForSEO rather than deducted from
+findings, and it is NOT part of the Overall mean -- putting it in the grid
+would imply both."""
 from __future__ import annotations
 
 import html as html_lib
@@ -48,6 +53,91 @@ def _score_color(score) -> str:
 def _sev_pill(sev: str) -> str:
     c = SEVERITY_COLOR.get(sev, "#666")
     return (f'<span class="sev" style="background:{c}">{_esc(sev)}</span>')
+
+
+def _seo_section(scan: dict) -> list[str]:
+    """The SEO score block: one headline number plus the four component
+    metrics behind it, read straight off sightline_scans.
+
+    Presented like the dimension grid because it is the same kind of
+    object -- a 0-100 score with per-component coverage -- but kept in its
+    own section, with its own CSS classes, because it is measured rather
+    than deducted and does not feed Overall.
+    """
+    from ..scoring.seo import COMPONENT_ORDER
+
+    metrics = scan.get("seo_metrics") or {}
+    score = scan.get("seo_score")
+    components = metrics.get("components") or {}
+
+    out: list[str] = []
+    version = metrics.get("version") or ""
+    score_txt = "not measured" if score is None else f"{score:.0f} / 100"
+    cap = score_txt + (f" &middot; {_esc(version)}" if version else "")
+    out.append(f"<h2>Organic search presence "
+               f"<span class='capscore'>{cap}</span></h2>")
+
+    if score is None and not components:
+        out.append("<p class='muted'>No SEO measurement recorded for this "
+                   "scan. Either it predates the SEO score or no DataForSEO "
+                   "endpoint could be reached &mdash; this is not a score of "
+                   "zero.</p>")
+        return out
+
+    out.append("<p class='muted'>Measured from DataForSEO &mdash; keyword "
+               "footprint and link graph, scored on absolute values rather "
+               "than deducted from the findings above. This number and the "
+               "dimension scores answer different questions and are free to "
+               "disagree.</p>")
+
+    # jsonb does not preserve key order, so impose the canonical one and
+    # append anything a different score version left behind.
+    names = [n for n in COMPONENT_ORDER if n in components]
+    names += [n for n in components if n not in names]
+
+    out.append("<div class='seo-grid'>")
+    for name in names:
+        c = components.get(name) or {}
+        cscore = c.get("score")
+        label = _esc(c.get("label") or name.replace("_", " ").title())
+        if cscore is None:
+            out.append(f"<div class='seo-tile'>"
+                       f"<div class='seo-label'>{label}</div>"
+                       f"<div class='seo-score' style='color:#888'>&mdash;</div>"
+                       f"<div class='seo-cov'>not measured</div></div>")
+            continue
+        value, weight = c.get("value"), c.get("weight")
+        sub = f"{value:,}" if isinstance(value, (int, float)) else _esc(value)
+        if weight is not None:
+            sub += f" &middot; weight {weight:g}"
+        out.append(f"<div class='seo-tile'>"
+                   f"<div class='seo-label'>{label}</div>"
+                   f"<div class='seo-score' style='color:{_score_color(cscore)}'>"
+                   f"{cscore:.0f}</div>"
+                   f"<div class='seo-cov'>{sub}</div></div>")
+    out.append("</div>")
+
+    covered = metrics.get("covered_weight")
+    notes: list[str] = []
+    if isinstance(covered, (int, float)) and covered < 1.0:
+        pretty = ", ".join(
+            _esc((components.get(n) or {}).get("label") or n)
+            for n in (metrics.get("unmeasured") or [])
+        )
+        notes.append(f"{covered:.0%} of weight measured"
+                     + (f"; no data for {pretty}" if pretty else ""))
+    else:
+        notes.append("all components measured")
+    if metrics.get("backfilled"):
+        when = str(metrics.get("measured_at") or "")[:10]
+        notes.append(f"measured {when or 'later'}, after this scan ran")
+
+    out.append("<div class='overall-line'>")
+    out.append("<div>SEO score (weighted mean of measured components): "
+               f"<span class='seo-num'>{score_txt}</span></div>")
+    out.append(f"<div class='muted'>{' &middot; '.join(notes)}</div>")
+    out.append("</div>")
+    return out
 
 
 def render_scan(scan_id: int, weight_version_id: int) -> str:
@@ -98,6 +188,18 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
     .dim-tile .dim-score { font-size: 32px; font-weight: 700; line-height: 1.1;
                            margin-top: 4px; font-variant-numeric: tabular-nums; }
     .dim-tile .dim-cov { font-size: 11px; color: #888; margin-top: 4px; }
+    .seo-grid { display: grid; grid-template-columns: repeat(4, 1fr);
+                gap: 8px; margin: 16px 0 8px; }
+    .seo-tile { border: 1px solid #ddd; border-radius: 6px; padding: 14px 10px;
+                text-align: center; background: #fafafa; }
+    .seo-tile .seo-label { font-size: 11px; color: #666;
+                           text-transform: uppercase; letter-spacing: 0.03em;
+                           font-weight: 600; }
+    .seo-tile .seo-score { font-size: 32px; font-weight: 700; line-height: 1.1;
+                           margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .seo-tile .seo-cov { font-size: 11px; color: #888; margin-top: 4px; }
+    .overall-line .seo-num { font-size: 20px; font-weight: 600; color: #222;
+                             font-variant-numeric: tabular-nums; }
     .overall-line { display: flex; justify-content: space-between; align-items: baseline;
                     padding: 12px 4px; color: #444; font-size: 14px; }
     .overall-line .overall-num { font-size: 20px; font-weight: 600; color: #222;
@@ -172,6 +274,10 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
              f"<span class='overall-num'>{overall_txt}</span></div>")
     p.append(f"<div class='muted'>{cov_line} &middot; scan id {scan_id}</div>")
     p.append("</div>")
+
+    # SEO score. Its own section, directly under the AEO headline: both
+    # are scores of the same site, but only the dimensions feed Overall.
+    p.extend(_seo_section(scan))
 
     # Top drivers.
     if drivers:
@@ -267,7 +373,12 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
              "'available' counts only checks that actually ran. A dimension "
              "with unavailable findings is smaller in weight, not counted as "
              "either good or bad. Overall is the straight mean of the "
-             "dimensions that had at least one scored finding. This report "
+             "dimensions that had at least one scored finding &mdash; the SEO "
+             "score is not one of them. That score is measured from "
+             "DataForSEO's keyword and backlink data on absolute values, so "
+             "it can differ sharply from the dimension scores without either "
+             "being wrong: one describes the page we fetched, the other "
+             "describes the domain's standing in the market. This report "
              "does not claim that any listed tactic will cause a change in "
              "Google or assistant rankings; ranking systems are third-party "
              "and not controlled by Sightline. Assistant-visibility numbers "

@@ -313,3 +313,98 @@ class TestIndependenceFromFindings(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRenderSection(unittest.TestCase):
+    """The HTML section. Pure string assembly over a scan row, so the
+    branches real data can't currently reach are testable here."""
+
+    def section(self, seo_score, seo_metrics):
+        from sightline.render.html import _seo_section
+        return "".join(_seo_section({"seo_score": seo_score,
+                                     "seo_metrics": seo_metrics}))
+
+    def scored(self):
+        from sightline.render.html import _seo_section
+        return "".join(_seo_section(
+            {"seo_score": 43.1, "seo_metrics": seo.score(FULL)}))
+
+    def test_renders_every_component(self):
+        out = self.scored()
+        for label in ("Ranked keywords", "Top-10 keywords",
+                      "Referring domains", "Domain rank"):
+            self.assertIn(label, out)
+        self.assertIn("43 / 100", out)
+        self.assertIn("seo-v1", out)
+
+    def test_shows_raw_value_and_weight_not_just_the_subscore(self):
+        """The point of the section: three numbers exist per component."""
+        out = self.scored()
+        self.assertIn("weight 0.3", out)   # top10, trailing zero trimmed
+        self.assertIn("weight 0.25", out)
+        self.assertIn("120", out)          # ranked_keywords raw value
+
+    def test_not_measured_is_not_a_zero(self):
+        out = self.section(None, {})
+        self.assertIn("not measured", out)
+        self.assertIn("not a score of zero", out)
+        self.assertNotIn("seo-grid", out)
+
+    def test_measured_zero_still_renders_the_grid(self):
+        zeros = seo.score(metrics(ranked_keywords=0, top10_keywords=0,
+                                  referring_domains=0, domain_rank=0))
+        out = self.section(0.0, zeros)
+        self.assertIn("seo-grid", out)
+        self.assertIn("0 / 100", out)
+        self.assertNotIn("not a score of zero", out)
+
+    def test_partial_coverage_names_what_is_missing(self):
+        partial = seo.score(metrics(ranked_keywords=120, top10_keywords=6))
+        out = self.section(partial["score"], partial)
+        self.assertIn("55% of weight measured", out)
+        self.assertIn("Referring domains", out)
+        self.assertIn("&mdash;", out)          # the unmeasured tile
+        self.assertIn("not measured", out)
+
+    def test_backfilled_score_discloses_when_it_was_measured(self):
+        m = seo.score(FULL)
+        m["backfilled"] = True
+        m["measured_at"] = "2026-09-07T21:00:00+00:00"
+        out = self.section(m["score"], m)
+        self.assertIn("measured 2026-09-07, after this scan ran", out)
+
+    def test_live_score_makes_no_provenance_claim(self):
+        self.assertNotIn("after this scan ran", self.scored())
+
+    def test_component_order_is_canonical_not_jsonb_order(self):
+        """Postgres jsonb sorts keys, so the renderer must impose order."""
+        m = seo.score(FULL)
+        m["components"] = dict(reversed(list(m["components"].items())))
+        out = self.section(m["score"], m)
+        positions = [out.index(seo.COMPONENTS[n].label)
+                     for n in seo.COMPONENT_ORDER]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_unknown_component_from_another_version_still_renders(self):
+        m = seo.score(FULL)
+        m["components"]["local_pack"] = {"label": "Local pack", "weight": 0.1,
+                                         "value": 3, "score": 40.0}
+        out = self.section(m["score"], m)
+        self.assertIn("Local pack", out)
+
+    def test_labels_are_escaped(self):
+        m = seo.score(FULL)
+        m["components"]["ranked_keywords"]["label"] = "<script>x</script>"
+        out = self.section(m["score"], m)
+        self.assertNotIn("<script>", out)
+        self.assertIn("&lt;script&gt;", out)
+
+    def test_does_not_emit_dimension_tile_classes(self):
+        """Cited's dashboard parser scrapes dim-label/dim-score pairs into
+        the six AEO dimensions. The SEO tiles must not be picked up as a
+        seventh dimension, so they use their own class names."""
+        out = self.scored()
+        self.assertNotIn("dim-label", out)
+        self.assertNotIn("dim-score", out)
+        self.assertIn("seo-label", out)
+        self.assertIn("seo-score", out)
