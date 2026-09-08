@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import logging
 
-from flask import (Flask, Response, abort, redirect, render_template,
-                   request, url_for)
+from flask import (Flask, Response, abort, jsonify, redirect,
+                   render_template, request, url_for)
 
 from .. import db
 from ..pipeline import create_pending_scan
 from ..render.html import render_scan
+from ..render.json_export import export_scan
 from ..scoring import apply as apply_mod
 from ..scoring import weights as weights_mod
 from . import runner
@@ -82,6 +83,23 @@ def create_app() -> Flask:
         apply_mod.apply_to_scan(scan_id, weights_mod.snapshot(), wv_id)
         html = render_scan(scan_id, wv_id)
         return Response(html, mimetype="text/html; charset=utf-8")
+
+    @app.get("/report/<int:scan_id>/findings.json")
+    def report_json(scan_id: int):
+        """Cited's feed. Stable keys, plain copy only — see
+        render/json_export.py for what this deliberately does not send."""
+        scan = db.scan(scan_id)
+        if not scan:
+            abort(404)
+        if scan["status"] != "complete":
+            return jsonify({"error": f"scan is {scan['status']}"}), 409
+        wv_id = _current_wv_id()
+        # Cited polls this. apply_to_scan rewrites one score row per finding
+        # on every call, so score only when this scan is not already current
+        # under the live weights version.
+        if not db.scores_are_current(scan_id, wv_id):
+            apply_mod.apply_to_scan(scan_id, weights_mod.snapshot(), wv_id)
+        return jsonify(export_scan(scan_id, wv_id))
 
     @app.post("/scans/<int:scan_id>/delete")
     def delete(scan_id: int):

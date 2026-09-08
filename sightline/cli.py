@@ -156,6 +156,68 @@ def cmd_backfill_seo(args) -> None:
               f"({n} scan(s))  {detail}")
 
 
+def cmd_migrate_findings(args) -> None:
+    """Backfill impact/effort_minutes/owner and the brand/category profile
+    for scans that predate them. Values come from findings.TASK_GAP, so the
+    tables in findings.py stay the single source of them — no task value or
+    copy string is ever written by hand or by SQL."""
+    from . import findings as findings_mod
+
+    if args.refresh_profiles:
+        # Re-derive meta.profile for every scan that has findings, even one
+        # already carrying a profile. Needed after a change to
+        # findings.CATEGORY_WORDS or profile_from_rows: task fields do not
+        # depend on the profile, so the NULL-task-field query below would
+        # skip every scan and leave stale copy inputs in place.
+        changed = 0
+        for sc in db.scans_with_findings():
+            rows = db.findings_for_scan(sc["id"])
+            new_p = findings_mod.profile_from_rows(rows, sc["domain"])
+            old_p = (sc.get("meta") or {}).get("profile") or {}
+            if (old_p.get("brand"), old_p.get("category")) == (new_p.brand,
+                                                               new_p.category):
+                continue
+            if not args.dry_run:
+                db.set_scan_profile(sc["id"], new_p)
+            changed += 1
+            print(f"  scan {sc['id']:>4} {sc['domain'][:34]:<34} "
+                  f"{old_p.get('category') or '-'} -> {new_p.category}")
+        verb = "would refresh" if args.dry_run else "refreshed"
+        print(f"{verb} {changed} scan profile(s)")
+        return
+
+    scans = db.scans_needing_task_backfill()
+    if not scans:
+        print("no findings need backfilling")
+        return
+    total = 0
+    for sc in scans:
+        rows = db.findings_for_scan(sc["id"])
+        if not (sc.get("meta") or {}).get("profile"):
+            profile = findings_mod.profile_from_rows(rows, sc["domain"])
+            if not args.dry_run:
+                db.set_scan_profile(sc["id"], profile)
+        updates = []
+        for r in rows:
+            outcome = findings_mod._OUTCOME.get(r["severity"], findings_mod.GAP)
+            try:
+                _, task = findings_mod._copy_and_task(
+                    r["check_id"], r["item_key"] or "", outcome)
+            except KeyError as e:
+                print(f"  ! scan {sc['id']} {r['check_id']}: {e}",
+                      file=sys.stderr)
+                continue
+            updates.append((task.impact, task.effort_minutes, task.owner,
+                            r["id"]))
+        if not args.dry_run:
+            db.set_finding_task_fields(updates)
+        total += len(updates)
+        print(f"  scan {sc['id']:>4} {sc['domain'][:38]:<38} "
+              f"{len(updates)} finding(s)")
+    verb = "would update" if args.dry_run else "updated"
+    print(f"{verb} {total} finding(s) across {len(scans)} scan(s)")
+
+
 def cmd_render(args) -> None:
     from .render.html import render_scan
     wv = db.get_weight_version(args.version or weights_mod.WEIGHTS_VERSION)
@@ -301,6 +363,16 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("before", help="earlier weight version (e.g. v1)")
     cmp_.add_argument("after",  help="later weight version (e.g. v2)")
     cmp_.set_defaults(func=cmd_compare)
+
+    mf = sub.add_parser("migrate-findings",
+                        help="backfill impact/effort/owner + brand profile "
+                             "on findings that predate them")
+    mf.add_argument("--dry-run", action="store_true")
+    mf.add_argument("--refresh-profiles", action="store_true",
+                    help="re-derive meta.profile for every scan with "
+                         "findings, overwriting existing profiles; use after "
+                         "changing category words or profile resolution")
+    mf.set_defaults(func=cmd_migrate_findings)
 
     av = sub.add_parser("av-sample")
     av.add_argument("url")

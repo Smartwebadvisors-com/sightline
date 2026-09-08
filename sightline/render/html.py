@@ -1,5 +1,15 @@
 """HTML report renderer. Standalone file — inline CSS, no external assets,
-prints cleanly. This is the artifact you hand to a prospect.
+prints cleanly.
+
+INTERNAL AND TECHNICAL. This view renders each finding's `technical` block,
+which names formats and specs in our own vocabulary — it is for us and for a
+client's developer, not for the client. The client-facing surface is Cited,
+fed by render/json_export.py, which renders `plain`. Handing this file to a
+prospect puts "JSON-LD" and "CWV" in front of someone who has never heard
+either, which COPY.md rule 1 exists to prevent.
+
+Severity is not rendered here. It is a scoring input; what a reader sees per
+finding is impact, effort and owner as separate labelled values (rule 4).
 
 Under v2 the headline is six per-dimension scores; the overall score is a
 smaller line beneath. Coverage is explicit so a scan with an unmeasured
@@ -14,15 +24,14 @@ from __future__ import annotations
 import html as html_lib
 
 from .. import db
+from .. import findings as findings_mod
 from ..scoring.report import compute_report
 
 
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info", "pass", "unavailable"]
-SEVERITY_COLOR = {
-    "critical": "#8a1616", "high": "#c04b1a", "medium": "#b3841c",
-    "low": "#4a7a3a",      "info": "#3a5a7a",  "pass": "#2f6a3a",
-    "unavailable": "#6a6a6a",
-}
+# Severity still orders the list (worst first) but is never printed.
+IMPACT_COLOR = {"high": "#8a1616", "medium": "#b3841c", "low": "#4a7a3a"}
+OWNER_LABEL = {"client": "you do this", "swa": "we do this"}
 CHECK_LABEL = {
     "ai_crawler":         "AI crawler accessibility",
     "structured_data":    "Structured data",
@@ -50,12 +59,24 @@ def _score_color(score) -> str:
     return "#8a1616"
 
 
-def _sev_pill(sev: str) -> str:
-    c = SEVERITY_COLOR.get(sev, "#666")
-    return (f'<span class="sev" style="background:{c}">{_esc(sev)}</span>')
+def _impact_pill(impact: str) -> str:
+    c = IMPACT_COLOR.get(impact, "#666")
+    return f'<span class="impact" style="background:{c}">{_esc(impact)}</span>'
 
 
-def _seo_section(scan: dict) -> list[str]:
+def _task_meta(f) -> str:
+    """Impact, effort and owner as three labelled values. Never fused into a
+    phrase — COPY.md rule 4."""
+    return (
+        "<div class='task'>"
+        f"<span><b>Impact</b> {_esc(f.impact)}</span>"
+        f"<span><b>Effort</b> {f.effort_minutes} min</span>"
+        f"<span><b>Owner</b> {_esc(OWNER_LABEL.get(f.owner, f.owner))}</span>"
+        "</div>"
+    )
+
+
+def _seo_section(scan: dict, peers: dict | None = None) -> list[str]:
     """The SEO score block: one headline number plus the four component
     metrics behind it, read straight off sightline_scans.
 
@@ -72,7 +93,7 @@ def _seo_section(scan: dict) -> list[str]:
 
     out: list[str] = []
     version = metrics.get("version") or ""
-    score_txt = "not measured" if score is None else f"{score:.0f} / 100"
+    score_txt = findings_mod.score_phrase(score)
     cap = score_txt + (f" &middot; {_esc(version)}" if version else "")
     out.append(f"<h2>Organic search presence "
                f"<span class='capscore'>{cap}</span></h2>")
@@ -84,11 +105,11 @@ def _seo_section(scan: dict) -> list[str]:
                    "zero.</p>")
         return out
 
+    # The "free to disagree" hedge that used to live here is now part of the
+    # single disclaimer under the score block (rule 8).
     out.append("<p class='muted'>Measured from DataForSEO &mdash; keyword "
                "footprint and link graph, scored on absolute values rather "
-               "than deducted from the findings above. This number and the "
-               "dimension scores answer different questions and are free to "
-               "disagree.</p>")
+               "than deducted from the findings above.</p>")
 
     # jsonb does not preserve key order, so impose the canonical one and
     # append anything a different score version left behind.
@@ -137,6 +158,9 @@ def _seo_section(scan: dict) -> list[str]:
                f"<span class='seo-num'>{score_txt}</span></div>")
     out.append(f"<div class='muted'>{' &middot; '.join(notes)}</div>")
     out.append("</div>")
+    peer = findings_mod.peer_sentence(score, peers)
+    if peer:
+        out.append(f"<p class='peer'>{_esc(peer)}</p>")
     return out
 
 
@@ -149,6 +173,7 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
         raise ValueError(f"weight version id {weight_version_id} not found")
 
     report = compute_report(scan_id, weight_version_id)
+    profile = findings_mod.profile_from_meta(scan.get("meta"))
     dim_scores = report["dimensions"]
     dim_data = report["dim_data"]
     overall = report["overall"]
@@ -159,14 +184,26 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
     dim_order = (wv["weights"].get("dimension_order")
                  or list(dim_scores.keys()))
 
-    # Top drivers: findings with the largest deduction across all scored
-    # dimensions.
-    drivers: list[dict] = []
-    for dim in dim_data.values():
-        for f in dim["findings"]:
-            if (f["deduction"] or 0) > 0 and f["severity"] != "unavailable":
-                drivers.append(f)
-    drivers.sort(key=lambda f: -float(f["deduction"] or 0))
+    # Rebuild every stored row through the findings module, so this view and
+    # Cited read the same two blocks from the same templates. Nothing here
+    # writes a client-facing sentence.
+    for entry in dim_data.values():
+        entry["built"] = [findings_mod.from_row(r, profile)
+                          for r in entry["findings"]]
+    unmapped_built = [findings_mod.from_row(r, profile) for r in unmapped]
+
+    # swa-owned findings are work we perform, not instructions to the client,
+    # so they get their own section and leave the graded lists.
+    ours = [f for e in dim_data.values() for f in e["built"] if f.owner == "swa"]
+    ours += [f for f in unmapped_built if f.owner == "swa"]
+    for entry in dim_data.values():
+        entry["built"] = [f for f in entry["built"] if f.owner != "swa"]
+    unmapped_built = [f for f in unmapped_built if f.owner != "swa"]
+
+    # Top drivers: findings with the largest deduction across all dimensions.
+    drivers = [f for e in dim_data.values() for f in e["built"]
+               if (f.deduction or 0) > 0 and f.severity != "unavailable"]
+    drivers.sort(key=lambda f: -float(f.deduction or 0))
     drivers = drivers[:6]
 
     css = """
@@ -204,13 +241,19 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
                     padding: 12px 4px; color: #444; font-size: 14px; }
     .overall-line .overall-num { font-size: 20px; font-weight: 600; color: #222;
                                  font-variant-numeric: tabular-nums; }
+    .peer { color: #555; font-size: 13px; margin: 0 4px 8px; }
+    .scale-note { color: #888; font-size: 12px; margin: 0 4px 4px; }
     table { border-collapse: collapse; width: 100%; margin: 8px 0 16px; }
     th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: top; }
     th { background: #f6f6f6; font-weight: 600; font-size: 13px; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .sev { display: inline-block; padding: 1px 8px; border-radius: 10px;
-           color: white; font-size: 11px; font-weight: 600; text-transform: uppercase;
-           letter-spacing: 0.02em; }
+    .impact { display: inline-block; padding: 1px 8px; border-radius: 10px;
+              color: white; font-size: 11px; font-weight: 600;
+              text-transform: uppercase; letter-spacing: 0.02em; }
+    .task { display: flex; gap: 16px; margin-top: 8px; color: #444;
+            font-size: 13px; }
+    .task b { color: #666; font-weight: 600; }
+    .ours { background: #f6f8fb; border-color: #dbe3ee; }
     .finding { border: 1px solid #eee; border-radius: 6px; padding: 12px 14px;
                margin: 8px 0; }
     .finding.pass { background: #f7fbf7; }
@@ -221,8 +264,8 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
     .finding .dedn { color: #8a1616; font-variant-numeric: tabular-nums; margin-left: auto; }
     .finding .body { color: #333; margin-top: 6px; }
     .finding .remed { color: #444; margin-top: 6px; font-style: italic; font-size: 14px; }
-    .disclaimer { color: #666; font-size: 13px; border-left: 3px solid #ddd;
-                  padding: 6px 12px; margin: 24px 0; }
+    .disclaimer { color: #555; font-size: 13px; border-left: 3px solid #ddd;
+                  padding: 8px 12px; margin: 4px 0 20px; }
     .muted { color: #888; }
     .footer-note { color: #999; font-size: 12px; margin-top: 32px; }
     """
@@ -261,9 +304,9 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
             f"</div>"
         )
     p.append("</div>")
+    p.append("<p class='scale-note'>Each dimension is scored out of 100.</p>")
 
-    # Overall + coverage.
-    overall_txt = ("—" if overall is None else f"{overall:.0f} / 100")
+    # Overall + coverage, then the one disclaimer, directly underneath.
     cov_line = (
         f"scored on {coverage['scored']} of {coverage['total']} finding(s)"
         + (f"; {coverage['unavailable']} unavailable"
@@ -271,13 +314,24 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
     )
     p.append("<div class='overall-line'>")
     p.append(f"<div>Overall (mean of scored dimensions): "
-             f"<span class='overall-num'>{overall_txt}</span></div>")
+             f"<span class='overall-num'>"
+             f"{findings_mod.score_phrase(overall)}</span></div>")
     p.append(f"<div class='muted'>{cov_line} &middot; scan id {scan_id}</div>")
     p.append("</div>")
+    peer = findings_mod.peer_sentence(
+        overall, db.peer_overall(weight_version_id, scan["domain"]))
+    if peer:
+        p.append(f"<p class='peer'>{_esc(peer)}</p>")
+
+    # Rule 8: one disclaimer, once, here. The three that used to be scattered
+    # through this report (ranking systems, sampling variance, SEO-vs-
+    # dimension divergence) are folded into findings.disclaimer().
+    p.append(f"<div class='disclaimer'>{_esc(findings_mod.disclaimer(profile))}"
+             "</div>")
 
     # SEO score. Its own section, directly under the AEO headline: both
     # are scores of the same site, but only the dimensions feed Overall.
-    p.extend(_seo_section(scan))
+    p.extend(_seo_section(scan, db.peer_seo_score(scan["domain"])))
 
     # Top drivers.
     if drivers:
@@ -286,12 +340,13 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
         p.append("<tr><th>Dimension</th><th>Finding</th><th class='num'>Points</th></tr>")
         for d in drivers:
             dim = next((dname for dname, dd in dim_data.items()
-                        if d in dd["findings"]), None)
+                        if d in dd["built"]), None)
             dim_label = dim_labels.get(dim, dim or "")
             p.append(
                 f"<tr><td>{_esc(dim_label)}</td>"
-                f"<td>{_sev_pill(d['severity'])} {_esc(d['observed'])[:180]}</td>"
-                f"<td class='num'>&minus;{float(d['deduction'] or 0):.1f}</td></tr>"
+                f"<td>{_impact_pill(d.impact)} "
+                f"{_esc(d.technical.detail)[:180]}</td>"
+                f"<td class='num'>&minus;{float(d.deduction or 0):.1f}</td></tr>"
             )
         p.append("</table>")
         p.append("<p class='muted'>Every point above traces to a specific "
@@ -302,52 +357,70 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
         if dim not in dim_data:
             continue
         entry = dim_data[dim]
-        if not entry["findings"]:
+        if not entry["built"]:
             continue
         label = _esc(dim_labels.get(dim, dim))
         score = dim_scores.get(dim)
-        score_note = ("not measured" if score is None else f"{score:.0f} / 100")
+        score_note = findings_mod.score_phrase(score)
         p.append(
             f"<h2>{label} "
             f"<span class='capscore'>{score_note}</span></h2>"
         )
-        fs = sorted(entry["findings"], key=lambda f: (
-            SEVERITY_ORDER.index(f["severity"]) if f["severity"] in SEVERITY_ORDER else 99,
-            f["check_id"], f["item_key"],
+        fs = sorted(entry["built"], key=lambda f: (
+            SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else 99,
+            f.check_id, f.item_key,
         ))
         for f in fs:
             cls = ""
-            if f["severity"] in ("pass", "unavailable", "info"):
-                cls = " " + f["severity"]
+            if f.severity in ("pass", "unavailable", "info"):
+                cls = " " + f.severity
             p.append(f"<div class='finding{cls}'>")
             p.append("<div class='row'>")
-            p.append(f"<div class='head'>{_sev_pill(f['severity'])} "
-                     f"{_esc(f['examined'])}</div>")
-            if (f["deduction"] or 0) > 0:
-                p.append(f"<div class='dedn'>&minus;{float(f['deduction']):.1f}</div>")
+            p.append(f"<div class='head'>{_impact_pill(f.impact)} "
+                     f"{_esc(f.technical.title)}</div>")
+            if (f.deduction or 0) > 0:
+                p.append(f"<div class='dedn'>&minus;{float(f.deduction):.1f}</div>")
             p.append("</div>")
-            p.append(f"<div class='body'>{_esc(f['observed'])}</div>")
-            if f["remediation"]:
-                p.append(f"<div class='remed'>{_esc(f['remediation'])}</div>")
+            p.append(f"<div class='body'>{_esc(f.technical.detail)}</div>")
+            if f.remediation:
+                p.append(f"<div class='remed'>{_esc(f.remediation)}</div>")
+            p.append(_task_meta(f))
             p.append("</div>")
 
     # Informational (unmapped) findings — llms.txt lives here.
-    if unmapped:
+    if unmapped_built:
         p.append("<h2>Informational <span class='capscore'>not scored</span></h2>")
         p.append("<p class='muted'>These checks run and appear in the report "
                  "but do not affect the score. llms.txt is not a documented "
                  "ranking signal; the scan reports its state as operational "
                  "hygiene, not authority.</p>")
-        for f in unmapped:
-            cls = " info"
-            p.append(f"<div class='finding{cls}'>")
+        for f in unmapped_built:
+            p.append("<div class='finding info'>")
             p.append("<div class='row'>")
-            p.append(f"<div class='head'>{_sev_pill(f['severity'])} "
-                     f"{_esc(f['examined'])}</div>")
+            p.append(f"<div class='head'>{_impact_pill(f.impact)} "
+                     f"{_esc(f.technical.title)}</div>")
             p.append("</div>")
-            p.append(f"<div class='body'>{_esc(f['observed'])}</div>")
-            if f["remediation"]:
-                p.append(f"<div class='remed'>{_esc(f['remediation'])}</div>")
+            p.append(f"<div class='body'>{_esc(f.technical.detail)}</div>")
+            if f.remediation:
+                p.append(f"<div class='remed'>{_esc(f.remediation)}</div>")
+            p.append(_task_meta(f))
+            p.append("</div>")
+
+    # Work we perform. Separate section so nothing owned by us reads as a
+    # to-do list handed back to the client (COPY.md rule 3).
+    if ours:
+        p.append("<h2>Work we perform <span class='capscore'>not scored</span></h2>")
+        p.append("<p class='muted'>Sightline runs these; they are not "
+                 "instructions for the client and they do not affect any "
+                 "score.</p>")
+        for f in ours:
+            p.append("<div class='finding ours'>")
+            p.append("<div class='row'>")
+            p.append(f"<div class='head'>{_impact_pill(f.impact)} "
+                     f"{_esc(f.technical.title)}</div>")
+            p.append("</div>")
+            p.append(f"<div class='body'>{_esc(f.technical.detail)}</div>")
+            p.append(_task_meta(f))
             p.append("</div>")
 
     # AV visibility.
@@ -359,32 +432,25 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
                  "for this domain yet.</p>")
     elif n < 10:
         p.append(f"<p><b>Sample size: {n}</b> in the last {av['window_days']} "
-                 "days. This is insufficient for a trend claim — treat as an "
-                 "early measurement, not a rank.</p>")
+                 "days. Below the 10-sample floor for a trend claim.</p>")
     else:
         rate = av["visibility_rate"]
         p.append(f"<p>Sample size: {n} in the last {av['window_days']} days. "
-                 f"Visibility rate: {rate:.0%}. This is a repeated measurement "
-                 "with real variance, not a rank.</p>")
+                 f"Visibility rate: {rate:.0%}.</p>")
 
-    p.append("<div class='disclaimer'>")
-    p.append("<b>How to read this report.</b> Each dimension score is "
-             "100 &times; (points earned / points available), where "
+    # Scoring METHOD, not a disclaimer: it explains the arithmetic for the
+    # internal reader and makes no hedge. The three hedges this block used to
+    # also carry (ranking systems are third-party, sampling variance,
+    # SEO-vs-dimension divergence) are now the single disclaimer rendered
+    # under the score block — COPY.md rule 8, one disclaimer in one place.
+    p.append("<p class='muted'><b>How this is scored.</b> Each dimension "
+             "score is 100 &times; (points earned / points available), where "
              "'available' counts only checks that actually ran. A dimension "
              "with unavailable findings is smaller in weight, not counted as "
              "either good or bad. Overall is the straight mean of the "
              "dimensions that had at least one scored finding &mdash; the SEO "
-             "score is not one of them. That score is measured from "
-             "DataForSEO's keyword and backlink data on absolute values, so "
-             "it can differ sharply from the dimension scores without either "
-             "being wrong: one describes the page we fetched, the other "
-             "describes the domain's standing in the market. This report "
-             "does not claim that any listed tactic will cause a change in "
-             "Google or assistant rankings; ranking systems are third-party "
-             "and not controlled by Sightline. Assistant-visibility numbers "
-             "are sampled measurements with real variance and should be read "
-             "as trends over sample size, not as ranks.")
-    p.append("</div>")
+             "score is not one of them, and is measured from DataForSEO's "
+             "keyword and backlink data on absolute values.</p>")
 
     p.append(f"<div class='footer-note'>Sightline scan #{scan_id} &middot; "
              f"weights <code>{_esc(wv['version'])}</code></div>")

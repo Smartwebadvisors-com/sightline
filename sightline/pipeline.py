@@ -21,8 +21,9 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from . import db
+from . import findings as findings_mod
 from .checks import (ai_crawler, structured_data, entity_consistency,
-                     answer_first, llms_txt, pagespeed, rank)
+                     answer_first, llms_txt, pagespeed, rank, prompt_testing)
 from .checks.base import ScanContext
 from .fetch import discovery
 from .fetch import http as fetch_http
@@ -33,7 +34,7 @@ from .scoring import weights as weights_mod
 log = logging.getLogger(__name__)
 
 CHECKS = [ai_crawler, structured_data, entity_consistency,
-          answer_first, llms_txt, pagespeed, rank]
+          answer_first, llms_txt, pagespeed, rank, prompt_testing]
 
 ProgressCallback = Callable[[str, int | None], None]
 
@@ -94,6 +95,9 @@ def _build_context(url: str) -> ScanContext:
     )
     ctx.page_fetch = r
     ctx.page = discovery.parse_page(final, r.text)
+    # Resolved once, from the page we just parsed, and reused for every
+    # finding's plain copy so one report cannot call the client two names.
+    ctx.profile = findings_mod.profile_from_page(ctx.page, ctx.domain)
     rt = fetch_http.try_relative(final, "/robots.txt")
     ctx.robots_status = rt.status
     ctx.robots_text = rt.text if rt.ok else None
@@ -122,15 +126,19 @@ def run_scan_for(scan_id: int, url: str,
                  progress: ProgressCallback | None = None) -> dict:
     try:
         ctx = _build_context(url)
+        db.set_scan_profile(scan_id, ctx.profile)
         for mod in CHECKS:
             try:
-                findings = mod.run(ctx)
+                observations = mod.run(ctx)
             except Exception:
                 log.exception("check %s crashed", mod.CHECK_ID)
                 if progress:
                     progress(mod.CHECK_ID, None)
                 continue
-            n = db.write_findings(scan_id, findings)
+            # build_all is the only path from observation to stored finding,
+            # so both copy blocks exist before anything is persisted.
+            n = db.write_findings(
+                scan_id, findings_mod.build_all(observations, ctx.profile))
             if progress:
                 progress(mod.CHECK_ID, n)
         wv_id = register_current_weights()
