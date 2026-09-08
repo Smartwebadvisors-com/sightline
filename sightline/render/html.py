@@ -66,12 +66,26 @@ def _impact_pill(impact: str) -> str:
 
 def _task_meta(f) -> str:
     """Impact, effort and owner as three labelled values. Never fused into a
-    phrase — COPY.md rule 4."""
+    phrase — COPY.md rule 4.
+
+    Also carries severity in a `class="sev"` span. That is NOT redundant with
+    impact: severity is the scoring input, impact is the business consequence,
+    and this view is internal so both are legitimate here. It is also load-
+    bearing for Cited, which parses this report with
+    /class=['"]sev['"][^>]*>(.*?)<\/span>/ and DEFAULTS TO "info" when the
+    match fails — see /opt/cited/src/lib/sightline/dashboard.ts. A silent
+    default of "info" makes every check read 'pass' and empties the
+    recommendation list, so removing this span tells every Cited client their
+    site is clean. Do not remove it until Cited reads findings.json instead;
+    tests/test_findings_copy.py pins it.
+    """
     return (
         "<div class='task'>"
         f"<span><b>Impact</b> {_esc(f.impact)}</span>"
         f"<span><b>Effort</b> {f.effort_minutes} min</span>"
         f"<span><b>Owner</b> {_esc(OWNER_LABEL.get(f.owner, f.owner))}</span>"
+        f"<span><b>Severity</b> "
+        f'<span class="sev">{_esc(f.severity)}</span></span>'
         "</div>"
     )
 

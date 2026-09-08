@@ -2,6 +2,7 @@
 catch the mechanical violations, which are the ones that actually ship."""
 from __future__ import annotations
 
+import re
 import unittest
 
 from sightline import findings as F
@@ -274,3 +275,43 @@ class TestProfileResolutionPathsAgree(unittest.TestCase):
               "evidence": {"types": ["WebSite", "BreadcrumbList"]}}],
             "example.com")
         self.assertEqual(p.category, "business")
+
+
+class TestCitedScrapingCoupling(unittest.TestCase):
+    """Cited parses Sightline's HTML report and defaults severity to "info"
+    when its regex misses. "info" maps to status 'pass' and is filtered out
+    of the recommendation list, so a missed match does not error -- it tells
+    every Cited client their site is clean.
+
+    These tests use Cited's ACTUAL regexes, copied from
+    /opt/cited/src/lib/sightline/dashboard.ts, so a class rename here fails
+    here instead of silently in Cited. Delete this class only when Cited
+    reads /report/<id>/findings.json instead of scraping.
+    """
+
+    # dashboard.ts:81
+    SEV_RE = re.compile(r"""class=['"]sev['"][^>]*>([\s\S]*?)</span>""")
+
+    def _finding(self, severity="high"):
+        from sightline.render.html import _task_meta
+        return _task_meta(F.build(CheckOutput(
+            check_id="ai_crawler", severity=severity,
+            examined="x", observed="y"), PROFILE))
+
+    def test_severity_is_still_scrapable(self):
+        for severity in ("critical", "high", "medium", "low", "pass",
+                         "info", "unavailable"):
+            m = self.SEV_RE.search(self._finding(severity))
+            self.assertIsNotNone(m, f"{severity}: Cited would default to info")
+            self.assertEqual(m.group(1).strip(), severity)
+
+    def test_impact_pill_does_not_satisfy_the_severity_regex(self):
+        """The impact pill is a different axis; it must not be mistaken for
+        severity, or Cited would score business impact as severity."""
+        from sightline.render.html import _impact_pill
+        self.assertIsNone(self.SEV_RE.search(_impact_pill("high")))
+
+    def test_the_reason_is_documented_where_someone_would_delete_it(self):
+        from sightline.render.html import _task_meta
+        self.assertIn("Cited", _task_meta.__doc__)
+        self.assertIn("findings.json", _task_meta.__doc__)
