@@ -266,6 +266,24 @@ def scores_for_scan(scan_id: int, weight_version_id: int) -> list[dict]:
         ).fetchall()
 
 
+def write_scan_overall(scan_id: int, weight_version_id: int,
+                       overall: float | None) -> None:
+    """Cache a scan's overall score under one weight version. NULL overall is
+    meaningful (no scored dimension) and is stored as NULL, not skipped, so
+    the peer query can tell 'scored zero' from 'never scored'."""
+    with conn() as c:
+        c.execute(
+            """INSERT INTO sightline_scan_overall
+                 (scan_id, weight_version_id, overall)
+               VALUES (%s, %s, %s)
+               ON CONFLICT (scan_id, weight_version_id) DO UPDATE SET
+                 overall     = EXCLUDED.overall,
+                 computed_at = NOW()""",
+            (scan_id, weight_version_id, overall),
+        )
+        c.commit()
+
+
 def scores_are_current(scan_id: int, weight_version_id: int) -> bool:
     """True when every finding on this scan already has a deduction under
     this weight version.
@@ -292,44 +310,42 @@ def scores_are_current(scan_id: int, weight_version_id: int) -> bool:
 
 def peer_overall(weight_version_id: int, exclude_domain: str,
                  limit: int = 200) -> dict | None:
-    """Median overall score across the most recent complete scan of every
-    OTHER domain. None when there are too few to compare against.
+    """Median overall across the most recent complete scan of every OTHER
+    domain. None when there are too few to compare against.
 
-    This is the only peer data we have: our own scan history. It is not
-    category-matched, so the report says exactly what it is — "the N other
-    sites we have scanned" — and says nothing at all below
-    findings.MIN_PEER_DOMAINS. See COPY.md rule 5.
+    Reads the cached overall from sightline_scan_overall rather than
+    recomputing it: this used to run one compute_report() per peer domain on
+    every render, which was ~120 round trips and ~3.5s, growing linearly
+    with scan history. Now it is a single aggregate.
 
-    One compute_report() per peer domain, capped at `limit`, on a page that
-    already runs one for the scan being rendered. If the scan table grows
-    past a few hundred domains this wants a materialized column.
+    A weights version with no cached rows yet yields None, so the peer line
+    is suppressed rather than computed from a partial population --
+    `sightline rescore all --version <new>` fills it for every complete
+    scan. This is the only peer data we have, our own history, and it is not
+    category-matched, so the report says exactly what it is. See COPY.md
+    rule 5.
     """
-    from .scoring.report import compute_report
     with conn() as c:
-        rows = c.execute(
-            """SELECT DISTINCT ON (LOWER(domain)) id
-                 FROM sightline_scans
-                WHERE status = 'complete'
-                  AND LOWER(domain) <> LOWER(%s)
-                ORDER BY LOWER(domain), requested_at DESC
-                LIMIT %s""",
-            (exclude_domain or "", limit),
-        ).fetchall()
-    scores: list[float] = []
-    for r in rows:
-        try:
-            v = compute_report(r["id"], weight_version_id)["overall"]
-        except Exception:
-            continue
-        if v is not None:
-            scores.append(float(v))
-    if len(scores) < MIN_PEER_DOMAINS:
+        row = c.execute(
+            """SELECT COUNT(*) AS n,
+                      PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY overall)
+                          AS median
+                 FROM (SELECT DISTINCT ON (LOWER(s.domain)) o.overall
+                         FROM sightline_scans s
+                         JOIN sightline_scan_overall o
+                           ON o.scan_id = s.id
+                          AND o.weight_version_id = %s
+                        WHERE s.status = 'complete'
+                          AND o.overall IS NOT NULL
+                          AND LOWER(s.domain) <> LOWER(%s)
+                        ORDER BY LOWER(s.domain), s.requested_at DESC
+                        LIMIT %s) latest""",
+            (weight_version_id, exclude_domain or "", limit),
+        ).fetchone()
+    n = (row or {}).get("n") or 0
+    if n < MIN_PEER_DOMAINS:
         return None
-    scores.sort()
-    mid = len(scores) // 2
-    median = (scores[mid] if len(scores) % 2
-              else (scores[mid - 1] + scores[mid]) / 2)
-    return {"n_domains": len(scores), "median": median}
+    return {"n_domains": n, "median": float(row["median"])}
 
 
 def peer_seo_score(exclude_domain: str) -> dict | None:
