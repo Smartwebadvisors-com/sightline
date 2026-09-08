@@ -1,6 +1,11 @@
 """Check → Finding contract. Checks describe what they examined and what
 they observed. They do not assign numbers. Scoring lives elsewhere so the
-same finding can be re-scored under a new weight model without re-fetching."""
+same finding can be re-scored under a new weight model without re-fetching.
+
+This Finding is raw check output. It is NOT the client-facing finding schema:
+that is findings.Finding, which carries the technical and plain copy blocks
+plus impact/effort_minutes/owner, and is built from one of these by
+findings.build(). Checks never write client-facing copy — see COPY.md."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -9,6 +14,10 @@ from typing import Any
 # Severities. 'pass' and 'info' record something we checked but is fine, so
 # the report can show the full audit trail. 'unavailable' means we could not
 # measure — never counted against the site.
+#
+# Severity is a SCORING input only (scoring/weights.py keys deductions off
+# it). It is never rendered in a client-facing view; a client sees impact,
+# effort and owner as three separate values. See COPY.md rule 4.
 SEVERITIES = ("pass", "info", "low", "medium", "high", "critical", "unavailable")
 
 
@@ -46,3 +55,6 @@ class ScanContext:
     # from the calls it already makes. See dataforseo.metrics_from().
     # None means the rank check never ran.
     seo_metrics: dict | None = None
+    # Brand + category for plain copy, resolved once by the pipeline.
+    # findings.ClientProfile. Checks never read it.
+    profile: Any = None

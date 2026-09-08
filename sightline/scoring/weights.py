@@ -97,6 +97,16 @@ DEDUCTIONS: dict[str, dict[str, float]] = {
         "critical": 0, "high": 0, "medium": 0, "low": 0,
         "info": 0, "pass": 0, "unavailable": 0,
     },
+
+    # Prompt testing is work we perform, not a property of the fetched page.
+    # Zero at every severity and absent from DIMENSIONS: it must not move a
+    # score in either direction. Listed here so a missing-key lookup is never
+    # what makes it zero. Adding it changes no existing score, so
+    # WEIGHTS_VERSION is deliberately not bumped.
+    "prompt_testing": {
+        "critical": 0, "high": 0, "medium": 0, "low": 0,
+        "info": 0, "pass": 0, "unavailable": 0,
+    },
 }
 
 

@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .config import settings
+from .findings import MIN_PEER_DOMAINS
 
 
 @contextmanager
@@ -101,7 +102,8 @@ def write_findings(scan_id: int, findings: Iterable[Any]) -> int:
     """Idempotent per (scan_id, check_id, item_key)."""
     rows = [
         (scan_id, f.check_id, f.item_key, f.severity,
-         f.examined, f.observed, f.remediation, Jsonb(f.evidence))
+         f.technical.title, f.technical.detail, f.remediation,
+         Jsonb(f.evidence), f.impact, f.effort_minutes, f.owner)
         for f in findings
     ]
     if not rows:
@@ -110,18 +112,76 @@ def write_findings(scan_id: int, findings: Iterable[Any]) -> int:
         c.cursor().executemany(
             """INSERT INTO sightline_findings
                  (scan_id, check_id, item_key, severity,
-                  examined, observed, remediation, evidence)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                  examined, observed, remediation, evidence,
+                  impact, effort_minutes, owner)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (scan_id, check_id, item_key) DO UPDATE SET
-                 severity    = EXCLUDED.severity,
-                 examined    = EXCLUDED.examined,
-                 observed    = EXCLUDED.observed,
-                 remediation = EXCLUDED.remediation,
-                 evidence    = EXCLUDED.evidence""",
+                 severity       = EXCLUDED.severity,
+                 examined       = EXCLUDED.examined,
+                 observed       = EXCLUDED.observed,
+                 remediation    = EXCLUDED.remediation,
+                 evidence       = EXCLUDED.evidence,
+                 impact         = EXCLUDED.impact,
+                 effort_minutes = EXCLUDED.effort_minutes,
+                 owner          = EXCLUDED.owner""",
             rows,
         )
         c.commit()
     return len(rows)
+
+
+def set_scan_profile(scan_id: int, profile: Any) -> None:
+    """Persist the brand + category used for this scan's plain copy, so the
+    report and the export re-derive the same sentences later."""
+    with conn() as c:
+        c.execute(
+            """UPDATE sightline_scans
+                  SET meta = meta || %s
+                WHERE id = %s""",
+            (Jsonb({"profile": {"brand": profile.brand,
+                                "category": profile.category}}), scan_id),
+        )
+        c.commit()
+
+
+def set_finding_task_fields(rows: Iterable[tuple]) -> int:
+    """rows: (impact, effort_minutes, owner, finding_id). For the backfill."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with conn() as c:
+        c.cursor().executemany(
+            """UPDATE sightline_findings
+                  SET impact = %s, effort_minutes = %s, owner = %s
+                WHERE id = %s""",
+            rows,
+        )
+        c.commit()
+    return len(rows)
+
+
+def scans_with_findings() -> list[dict]:
+    """Every scan that has at least one finding. Used by the profile refresh,
+    which must revisit scans whose task fields are already populated."""
+    with conn() as c:
+        return c.execute(
+            """SELECT DISTINCT s.id, s.domain, s.meta
+                 FROM sightline_scans s
+                 JOIN sightline_findings f ON f.scan_id = s.id
+                ORDER BY s.id"""
+        ).fetchall()
+
+
+def scans_needing_task_backfill() -> list[dict]:
+    with conn() as c:
+        return c.execute(
+            """SELECT DISTINCT s.id, s.domain, s.meta
+                 FROM sightline_scans s
+                 JOIN sightline_findings f ON f.scan_id = s.id
+                WHERE f.impact IS NULL OR f.owner IS NULL
+                   OR f.effort_minutes IS NULL
+                ORDER BY s.id"""
+        ).fetchall()
 
 
 def upsert_weight_version(version: str, description: str,
@@ -204,6 +264,92 @@ def scores_for_scan(scan_id: int, weight_version_id: int) -> list[dict]:
                 ORDER BY COALESCE(s.deduction, 0) DESC, f.check_id, f.item_key""",
             (weight_version_id, scan_id),
         ).fetchall()
+
+
+def scores_are_current(scan_id: int, weight_version_id: int) -> bool:
+    """True when every finding on this scan already has a deduction under
+    this weight version.
+
+    Two counts, no writes. apply_to_scan() rewrites one sightline_scores row
+    per finding on every call and bumps computed_at, which is fine on a
+    human-triggered render and wrong on an endpoint Cited polls. A read path
+    calls this first and only re-applies when the answer is False: either the
+    scan was never scored, or the weights version was bumped (a new
+    weight_version_id has no rows yet), or findings were written after a
+    partial apply.
+    """
+    with conn() as c:
+        row = c.execute(
+            """SELECT (SELECT COUNT(*) FROM sightline_findings
+                        WHERE scan_id = %s) AS n_findings,
+                      (SELECT COUNT(*) FROM sightline_scores
+                        WHERE scan_id = %s
+                          AND weight_version_id = %s) AS n_scores""",
+            (scan_id, scan_id, weight_version_id),
+        ).fetchone()
+    return bool(row["n_findings"]) and row["n_scores"] == row["n_findings"]
+
+
+def peer_overall(weight_version_id: int, exclude_domain: str,
+                 limit: int = 200) -> dict | None:
+    """Median overall score across the most recent complete scan of every
+    OTHER domain. None when there are too few to compare against.
+
+    This is the only peer data we have: our own scan history. It is not
+    category-matched, so the report says exactly what it is — "the N other
+    sites we have scanned" — and says nothing at all below
+    findings.MIN_PEER_DOMAINS. See COPY.md rule 5.
+
+    One compute_report() per peer domain, capped at `limit`, on a page that
+    already runs one for the scan being rendered. If the scan table grows
+    past a few hundred domains this wants a materialized column.
+    """
+    from .scoring.report import compute_report
+    with conn() as c:
+        rows = c.execute(
+            """SELECT DISTINCT ON (LOWER(domain)) id
+                 FROM sightline_scans
+                WHERE status = 'complete'
+                  AND LOWER(domain) <> LOWER(%s)
+                ORDER BY LOWER(domain), requested_at DESC
+                LIMIT %s""",
+            (exclude_domain or "", limit),
+        ).fetchall()
+    scores: list[float] = []
+    for r in rows:
+        try:
+            v = compute_report(r["id"], weight_version_id)["overall"]
+        except Exception:
+            continue
+        if v is not None:
+            scores.append(float(v))
+    if len(scores) < MIN_PEER_DOMAINS:
+        return None
+    scores.sort()
+    mid = len(scores) // 2
+    median = (scores[mid] if len(scores) % 2
+              else (scores[mid - 1] + scores[mid]) / 2)
+    return {"n_domains": len(scores), "median": median}
+
+
+def peer_seo_score(exclude_domain: str) -> dict | None:
+    """Same, for the measured SEO score. Read straight off the scan rows."""
+    with conn() as c:
+        row = c.execute(
+            """SELECT COUNT(*) AS n,
+                      PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY seo_score)
+                          AS median
+                 FROM (SELECT DISTINCT ON (LOWER(domain)) seo_score
+                         FROM sightline_scans
+                        WHERE status = 'complete' AND seo_score IS NOT NULL
+                          AND LOWER(domain) <> LOWER(%s)
+                        ORDER BY LOWER(domain), requested_at DESC) latest""",
+            (exclude_domain or "",),
+        ).fetchone()
+    n = (row or {}).get("n") or 0
+    if n < MIN_PEER_DOMAINS:
+        return None
+    return {"n_domains": n, "median": float(row["median"])}
 
 
 def delete_scan(scan_id: int) -> None:

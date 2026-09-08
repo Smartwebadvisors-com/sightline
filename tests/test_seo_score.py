@@ -334,7 +334,8 @@ class TestRenderSection(unittest.TestCase):
         for label in ("Ranked keywords", "Top-10 keywords",
                       "Referring domains", "Domain rank"):
             self.assertIn(label, out)
-        self.assertIn("43 / 100", out)
+        # COPY.md rule 5: the scale and the band travel with the number.
+        self.assertIn("43 out of 100 — weak", out)
         self.assertIn("seo-v1", out)
 
     def test_shows_raw_value_and_weight_not_just_the_subscore(self):
@@ -355,7 +356,7 @@ class TestRenderSection(unittest.TestCase):
                                   referring_domains=0, domain_rank=0))
         out = self.section(0.0, zeros)
         self.assertIn("seo-grid", out)
-        self.assertIn("0 / 100", out)
+        self.assertIn("0 out of 100 — critical gaps", out)
         self.assertNotIn("not a score of zero", out)
 
     def test_partial_coverage_names_what_is_missing(self):
@@ -391,6 +392,10 @@ class TestRenderSection(unittest.TestCase):
                                          "value": 3, "score": 40.0}
         out = self.section(m["score"], m)
         self.assertIn("Local pack", out)
+
+    def test_peer_line_absent_when_no_peer_data_is_passed(self):
+        """Rule 5 stays silent rather than asserting an unevidenced peer."""
+        self.assertNotIn("class='peer'", self.scored())
 
     def test_labels_are_escaped(self):
         m = seo.score(FULL)
