@@ -315,3 +315,68 @@ class TestCitedScrapingCoupling(unittest.TestCase):
         from sightline.render.html import _task_meta
         self.assertIn("Cited", _task_meta.__doc__)
         self.assertIn("findings.json", _task_meta.__doc__)
+
+
+class TestPeerMedianIsCached(unittest.TestCase):
+    """apply_to_scan is the only place overall is produced, so it is the only
+    place that can cache it. Without the cache write, peer_overall falls back
+    to one compute_report() per peer domain per render (~3.5s, growing with
+    scan history), or silently suppresses the peer line because the cache is
+    empty. Neither failure is visible from the report."""
+
+    def test_apply_to_scan_caches_the_overall_it_computed(self):
+        from sightline.scoring import apply as apply_mod
+
+        calls = []
+        fake_report = {"overall": 61.5, "dimensions": {}, "dim_data": {},
+                       "unmapped_findings": [], "coverage": {}}
+
+        class FakeDb:
+            @staticmethod
+            def findings_for_scan(scan_id):
+                return [{"id": 1, "check_id": "ai_crawler", "severity": "high"}]
+            @staticmethod
+            def write_scores(rows):
+                pass
+            @staticmethod
+            def write_scan_overall(scan_id, wv_id, overall):
+                calls.append((scan_id, wv_id, overall))
+
+        real_db, real_report = apply_mod.db, apply_mod.report_mod
+        try:
+            apply_mod.db = FakeDb
+            apply_mod.report_mod = type("R", (), {
+                "compute_report": staticmethod(lambda *a: fake_report)})
+            out = apply_mod.apply_to_scan(7, {"deductions": {}}, 3)
+        finally:
+            apply_mod.db, apply_mod.report_mod = real_db, real_report
+
+        self.assertEqual(calls, [(7, 3, 61.5)],
+                         "apply_to_scan must cache the overall it computed")
+        self.assertIs(out, fake_report, "return value must be unchanged")
+
+    def test_a_null_overall_is_cached_rather_than_skipped(self):
+        """'scored zero' and 'never scored' must stay distinguishable."""
+        from sightline.scoring import apply as apply_mod
+        calls = []
+
+        class FakeDb:
+            @staticmethod
+            def findings_for_scan(scan_id):
+                return []
+            @staticmethod
+            def write_scores(rows):
+                pass
+            @staticmethod
+            def write_scan_overall(scan_id, wv_id, overall):
+                calls.append(overall)
+
+        real_db, real_report = apply_mod.db, apply_mod.report_mod
+        try:
+            apply_mod.db = FakeDb
+            apply_mod.report_mod = type("R", (), {
+                "compute_report": staticmethod(lambda *a: {"overall": None})})
+            apply_mod.apply_to_scan(9, {"deductions": {}}, 3)
+        finally:
+            apply_mod.db, apply_mod.report_mod = real_db, real_report
+        self.assertEqual(calls, [None])

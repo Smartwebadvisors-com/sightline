@@ -19,4 +19,10 @@ def apply_to_scan(scan_id: int, weights_snapshot: dict,
         for f in findings
     ]
     db.write_scores(rows)
-    return report_mod.compute_report(scan_id, weight_version_id)
+    report = report_mod.compute_report(scan_id, weight_version_id)
+    # Cache the overall this call just computed. Peer comparison needs the
+    # median across every other domain, and deriving it live cost one
+    # compute_report() per peer domain per render. Written here because this
+    # is the one place the number is produced -- see sql/005.
+    db.write_scan_overall(scan_id, weight_version_id, report["overall"])
+    return report
