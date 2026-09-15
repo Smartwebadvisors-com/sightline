@@ -44,6 +44,25 @@ import psycopg
 #     AEO_TEST_DESTRUCTIVE=1 DATABASE_URL=... python3 test_outbox_pg.py
 # ---------------------------------------------------------------------------
 
+# Any row in any of these means the DSN points at a database that holds real
+# work, not a scratch one, and this suite must not run against it.
+#
+# The first four are the tables this suite drops and truncates. The scan
+# tables are not dropped here, but they share the database: while the four
+# prospecting tables sit empty on a freshly sourced install, scan history
+# does not, so counting only the first four waved the suite through onto a
+# database full of scans and findings. Presence of scan history is proof the
+# DSN is production.
+#
+# Kept in step with the identical list in test_queue_pg.py.
+GUARDED_TABLES = (
+    "sightline_prospects", "sightline_prospect_scans",
+    "sightline_queue", "sightline_outreach_events",
+    "sightline_scans", "sightline_findings", "sightline_scores",
+    "sightline_scan_overall",
+)
+
+
 def _refuse_if_real_data(dsn: str) -> None:
     import psycopg
 
@@ -51,8 +70,7 @@ def _refuse_if_real_data(dsn: str) -> None:
         return
     counts = {}
     with psycopg.connect(dsn, connect_timeout=10) as conn, conn.cursor() as cur:
-        for table in ("sightline_prospects", "sightline_prospect_scans",
-                      "sightline_queue", "sightline_outreach_events"):
+        for table in GUARDED_TABLES:
             try:
                 cur.execute(f"SELECT count(*) FROM {table};")
                 n = cur.fetchone()[0]
