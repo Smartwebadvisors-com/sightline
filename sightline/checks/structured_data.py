@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..fetch.discovery import Page, flatten_jsonld, types_of
 from .base import Finding, ScanContext
+from .schema_org import is_organization, organization_subtype
 
 CHECK_ID = "structured_data"
 
@@ -55,7 +56,12 @@ def _detect_business_type(nodes: list[dict]) -> str | None:
     for t in BUSINESS_TYPES:
         if t in seen_types:
             return t
-    return None
+    # Nothing in BUSINESS_TYPES matched, but a site marked up as NGO,
+    # Plumber or RoofingContractor has still told us what it is -- those
+    # are Organization subtypes. Reporting "could not infer" for them left
+    # the report with no business type and sent the client profile to the
+    # generic category, so plain.why read "business" on a charity.
+    return organization_subtype(seen_types)
 
 
 def run(ctx: ScanContext) -> list[Finding]:
@@ -165,9 +171,16 @@ def run(ctx: ScanContext) -> list[Finding]:
                 ))
 
     # Site-wide entities that are almost always worth having.
+    #
+    # Organization is matched across its whole subtype branch, not by the
+    # literal string: a site marked up as NGO or Plumber HAS an
+    # Organization node, and saying otherwise contradicted
+    # entity_consistency on the same scan. See checks/schema_org.py and
+    # COPY.md rule 9.
     all_types = {t for n in nodes for t in types_of(n)}
-    for expected in ("Organization", "WebSite"):
-        if expected not in all_types:
+    for expected, present in (("Organization", is_organization(all_types)),
+                              ("WebSite", "WebSite" in all_types)):
+        if not present:
             findings.append(Finding(
                 check_id=CHECK_ID, item_key=f"missing:{expected}",
                 severity="medium",
