@@ -114,6 +114,9 @@ CATEGORY_WORDS = {
     "autorepair": "auto repair shop",
     "autodealer": "car dealership",
     "professionalservice": "professional services firm",
+    # NGO is how schema.org spells a nonprofit; without a plain word for
+    # it a charity's report read "a business" throughout.
+    "ngo": "nonprofit",
     "localbusiness": "local business",
     "organization": "business",
 }

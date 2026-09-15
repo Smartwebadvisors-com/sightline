@@ -14,13 +14,17 @@ from urllib.parse import urlparse
 
 from ..fetch.discovery import Page, flatten_jsonld, types_of, visible_text
 from .base import Finding, ScanContext
+from .schema_org import ORGANIZATION_TYPES
 
 CHECK_ID = "entity_consistency"
 
-ENTITY_TYPES = {"Organization", "LocalBusiness", "Restaurant", "Store",
-                "MedicalBusiness", "LegalService", "ProfessionalService",
-                "AutoDealer", "Dentist", "HomeAndConstructionBusiness",
-                "Corporation", "NGO", "EducationalOrganization"}
+# The primary entity is an Organization of some kind. This reads the
+# shared branch rather than keeping a second hand-maintained list: the
+# local copy that used to live here was missing Plumber,
+# RoofingContractor, HVACBusiness and Electrician, so 13 sites were told
+# "No Organization/LocalBusiness-family node found" about markup that
+# plainly had one. Two lists is what let the two checks disagree.
+ENTITY_TYPES = ORGANIZATION_TYPES
 
 PHONE_RE = re.compile(r"(?:\+?\d[\d\-\.\s\(\)]{7,}\d)")
 

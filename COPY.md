@@ -48,6 +48,17 @@ Three hedges scattered through a report read as three separate admissions of
 doubt. `findings.disclaimer()` is the only disclaimer text, rendered once,
 directly under the score block. Nothing else in any view hedges.
 
+### 9. No finding asserts the absence of something another check found.
+One report told a charity all three of "No Organization node found", "Found
+entity 'Mall of Hope' of type NGO", and "2 blocks found, expanding to 5
+nodes". Two checks read the same markup and disagreed in public, and the
+wrong one deducted 6 points. A client cannot tell which sentence to believe,
+so both lose their authority. Where two checks can speak to the same
+subject, they resolve it from one shared source — see
+`checks/schema_org.py` — and the pair is registered in
+`tests/test_finding_consistency.py`, which fails the build if an absence
+claim and a presence claim can both hold on one scan.
+
 ---
 
 ## Where the rules are checked
@@ -61,3 +72,4 @@ directly under the score block. Nothing else in any view hedges.
 | 6 | review; `test_plain_titles_are_not_negations` catches the common shapes |
 | 7 | review |
 | 8 | `test_report_states_one_disclaimer_once` |
+| 9 | `test_finding_consistency.py` (`contradictions_in`) |
