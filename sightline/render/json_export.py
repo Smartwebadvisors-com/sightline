@@ -16,6 +16,13 @@ Two things this format guarantees, by construction:
 Scores carry `value`, `scale`, `band`, `display` and `peer` (null when we
 cannot evidence a comparison), so a consumer never has to guess the
 denominator (rule 5). `disclaimer` appears once, at the top level (rule 8).
+
+A finding with `outcome: "unmeasured"` is a measurement that did not
+happen, not a fault we found (rule 10). Its `impact` and `effort_minutes`
+are null and its `owner` is always "swa" — there is no work to schedule
+and nothing for the client to do. A consumer must not render it as a
+recommendation; it is excluded from every score's denominator, so the
+scores in this payload already read as though the check had not run.
 """
 from __future__ import annotations
 

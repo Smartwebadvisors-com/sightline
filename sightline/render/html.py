@@ -206,6 +206,20 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
                           for r in entry["findings"]]
     unmapped_built = [findings_mod.from_row(r, profile) for r in unmapped]
 
+    # A failed measurement is never a finding (COPY.md rule 10). Pull the
+    # unmeasured ones out before anything sorts, ranks or lists them, so
+    # they cannot appear as work in any section below.
+    notmeasured = [f for e in dim_data.values() for f in e["built"]
+                   if f.outcome == findings_mod.UNMEASURED]
+    notmeasured += [f for f in unmapped_built
+                    if f.outcome == findings_mod.UNMEASURED]
+    for entry in dim_data.values():
+        entry["built"] = [f for f in entry["built"]
+                          if f.outcome != findings_mod.UNMEASURED]
+    unmapped_built = [f for f in unmapped_built
+                      if f.outcome != findings_mod.UNMEASURED]
+    notmeasured.sort(key=lambda f: (f.check_id, f.item_key))
+
     # swa-owned findings are work we perform, not instructions to the client,
     # so they get their own section and leave the graded lists.
     ours = [f for e in dim_data.values() for f in e["built"] if f.owner == "swa"]
@@ -278,6 +292,12 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
     .finding .dedn { color: #8a1616; font-variant-numeric: tabular-nums; margin-left: auto; }
     .finding .body { color: #333; margin-top: 6px; }
     .finding .remed { color: #444; margin-top: 6px; font-style: italic; font-size: 14px; }
+    .nm { border: 1px dashed #d5d5d5; border-radius: 6px; padding: 12px 14px;
+          margin: 8px 0; background: #fafafa; color: #555; }
+    .nm .nm-head { font-weight: 600; color: #444; }
+    .nm .nm-body { margin-top: 6px; }
+    .nm .nm-task { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; }
+    .nm .nm-task b { color: #666; font-weight: 600; }
     .disclaimer { color: #555; font-size: 13px; border-left: 3px solid #ddd;
                   padding: 8px 12px; margin: 4px 0 20px; }
     .muted { color: #888; }
@@ -435,6 +455,47 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
             p.append("</div>")
             p.append(f"<div class='body'>{_esc(f.technical.detail)}</div>")
             p.append(_task_meta(f))
+            p.append("</div>")
+
+    # Measurements that did not happen. Deliberately NOT rendered as
+    # `class='finding ...'`, and deliberately in its own <h2> section.
+    #
+    # Cited scrapes this report with
+    # /<div class='finding[^']*'>([\s\S]*?)<\/div>\s*(?=<div class='finding|<h2|<\/body>)/
+    # and turns every block it matches into a check AND — for any severity
+    # that isn't literally 'pass' or 'info' — a recommendation reading
+    # "Fix the finding on the page, then rescan in Sightline."
+    # 'unavailable' does not match /pass|info/, so while these blocks were
+    # findings, a PageSpeed timeout shipped to every Cited client as a
+    # remediation CTA. No severity string avoids that: the one value that
+    # keeps Cited off green ('unavailable') is also the one that makes it
+    # emit the CTA. So these blocks are placed where Cited's block regex
+    # cannot start, and carry none of the class names it reads
+    # ('sev', 'body', 'remed') — it sees nothing rather than something
+    # wrong. The <h2> matters too: inline between two finding divs, the
+    # lookahead makes the PRECEDING block swallow this content. Both are
+    # pinned in tests/test_unavailable.py against Cited's real regexes.
+    #
+    # Rename these classes to anything starting with 'finding' and you
+    # silently re-create the bug. Delete this section only when Cited
+    # reads /report/<id>/findings.json.
+    if notmeasured:
+        p.append("<h2>Not measured this scan "
+                 "<span class='capscore'>no effect on any score</span></h2>")
+        p.append("<p class='muted'>These readings did not come back. They "
+                 "are not findings: no severity, no impact, no effort, and "
+                 "no fix to make. Each one is excluded from its dimension's "
+                 "denominator, so every score above reads exactly as it "
+                 "would if the check had not run at all. We re-run them on "
+                 "the next scan.</p>")
+        for f in notmeasured:
+            p.append("<div class='nm'>")
+            p.append(f"<div class='nm-head'>{_esc(f.technical.title)}</div>")
+            p.append(f"<div class='nm-body'>{_esc(f.technical.detail)}</div>")
+            p.append("<div class='nm-task'>"
+                     "<span><b>Status</b> not measured</span>"
+                     f"<span><b>Owner</b> {_esc(OWNER_LABEL['swa'])}</span>"
+                     "</div>")
             p.append("</div>")
 
     # AV visibility.

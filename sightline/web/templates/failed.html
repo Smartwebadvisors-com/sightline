@@ -5,7 +5,9 @@
 <p><a href="{{ url_for('index') }}">← back to list</a></p>
 <h2 class="group">Scan #{{ scan.id }} failed</h2>
 <p><b>URL:</b> {{ scan.url }}</p>
-{% if scan.error %}<div class="banner">{{ scan.error }}</div>{% endif %}
+{# `message` is unavailable.failure_message(scan). Do not print scan.error
+   here: it can hold a raw exception, and Cited scrapes this banner. #}
+<div class="banner">{{ message }}</div>
 <p>
   <form action="{{ url_for('delete', scan_id=scan.id) }}" method="post"
         onsubmit="return confirm('Delete this failed scan?');">

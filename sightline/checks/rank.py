@@ -16,6 +16,7 @@ The audit trail for those numbers lives in sightline_scans.seo_metrics.
 from __future__ import annotations
 
 from .. import dataforseo as dfs
+from .. import unavailable
 from .base import Finding, ScanContext
 
 CHECK_ID = "rank"
@@ -23,15 +24,10 @@ CHECK_ID = "rank"
 
 def _unavailable(item_key: str, endpoint: str, reason: str,
                  evidence: dict) -> Finding:
-    return Finding(
-        check_id=CHECK_ID, item_key=item_key,
-        severity="unavailable",
-        examined=f"DataForSEO {endpoint}",
-        observed=f"Endpoint not available on this account: {reason}",
-        remediation=(
-            "Enable the endpoint on your DataForSEO plan, or leave this "
-            "section marked as not measured."
-        ),
+    """No remediation: an endpoint we could not call is our gap, not a task
+    for the client, and a failed measurement is never a finding (rule 10)."""
+    return unavailable.unmeasured(
+        CHECK_ID, item_key, f"DataForSEO {endpoint}", reason,
         evidence={"endpoint": endpoint, **evidence},
     )
 
@@ -50,15 +46,11 @@ def run(ctx: ScanContext) -> list[Finding]:
             dfs.DFSResult(endpoint=dfs.EP_BACKLINKS,
                           error="credentials not configured"),
         )
-        return [Finding(
-            check_id=CHECK_ID, item_key="unavailable",
-            severity="unavailable",
-            examined="DataForSEO rank and keyword measurement",
-            observed="DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD not configured; "
-                     "check skipped.",
-            remediation=(
-                "Set DataForSEO credentials to enable rank and keyword findings."
-            ),
+        return [unavailable.unmeasured(
+            CHECK_ID, "unavailable",
+            "DataForSEO rank and keyword measurement",
+            unavailable.not_configured(
+                "DataForSEO", "DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD"),
         )]
 
     # Ranked keywords probe. Supplies the keyword NAMES for the report;

@@ -101,11 +101,20 @@ class TestPlainCopyRules(unittest.TestCase):
 
 class TestTaskFields(unittest.TestCase):
     def test_impact_effort_and_owner_are_three_values(self):
-        """Rule 4. No fused field, and severity is not one of them."""
+        """Rule 4. No fused field, and severity is not one of them.
+
+        Unmeasured findings are the one exception, and it is rule 10, not a
+        loophole: there is no work, so there is no impact to rate and no
+        effort to quote. The owner is still required.
+        """
         for f in _all_findings():
-            self.assertIn(f.impact, F.IMPACTS)
-            self.assertIsInstance(f.effort_minutes, int)
             self.assertIn(f.owner, F.OWNERS)
+            if f.outcome == F.UNMEASURED:
+                self.assertIsNone(f.impact, f.check_id)
+                self.assertIsNone(f.effort_minutes, f.check_id)
+            else:
+                self.assertIn(f.impact, F.IMPACTS)
+                self.assertIsInstance(f.effort_minutes, int)
 
     def test_no_lift_style_fused_field_exists(self):
         for name in ("lift", "priority", "quick_win"):
@@ -115,14 +124,14 @@ class TestTaskFields(unittest.TestCase):
         f = F.build(CheckOutput(check_id="pagespeed", severity="unavailable",
                                 examined="x", observed="y"), PROFILE)
         self.assertEqual(f.owner, "swa")
-        self.assertIn("We re-run", f.plain.title)
+        self.assertEqual(f.plain.title, "Not measured this scan")
 
     def test_swa_ownership_survives_a_passing_measurement(self):
         """Regression: prompt_testing emits severity='info', which maps to the
         PASS outcome. Ownership must be resolved from the check before
         outcome, or the one task we perform ships as a client instruction
         with generic pass copy."""
-        for severity in ("info", "pass", "unavailable", "high"):
+        for severity in ("info", "pass", "high"):
             f = F.build(CheckOutput(check_id="prompt_testing",
                                     severity=severity, examined="x",
                                     observed="y"), PROFILE)
@@ -130,6 +139,23 @@ class TestTaskFields(unittest.TestCase):
             self.assertEqual(f.effort_minutes, 90, severity)
             self.assertTrue(f.plain.title.startswith("We "), severity)
             self.assertTrue(f.plain.do.startswith("We "), severity)
+
+    def test_a_measurement_we_failed_to_take_is_not_the_standing_task(self):
+        """Rule 10 outranks the ownership short-circuit above.
+
+        Ownership still holds — unmeasured work is ours either way — but a
+        prompt_testing run we could not complete must not ship as the full
+        90-minute task described as though we had done it. That is the
+        standing copy attached to a measurement that never happened.
+        """
+        f = F.build(CheckOutput(check_id="prompt_testing",
+                                severity="unavailable", examined="x",
+                                observed="y"), PROFILE)
+        self.assertEqual(f.owner, "swa")
+        self.assertIsNone(f.impact)
+        self.assertIsNone(f.effort_minutes)
+        self.assertEqual(f.plain.title, "Not measured this scan")
+        self.assertNotIn("fixed set of buyer questions", f.plain.do)
 
     def test_client_checks_still_get_outcome_driven_copy(self):
         """The ownership short-circuit must not leak gap copy onto a pass."""
