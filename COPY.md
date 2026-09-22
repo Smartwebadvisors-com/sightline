@@ -59,6 +59,34 @@ subject, they resolve it from one shared source — see
 `tests/test_finding_consistency.py`, which fails the build if an absence
 claim and a presence claim can both hold on one scan.
 
+### 10. A failed measurement is never a finding.
+When a check cannot get a reading — PageSpeed times out, DataForSEO returns
+a 5xx, the page itself will not load — the honest output is "not measured",
+and it must not be able to masquerade as something we found. Concretely, an
+unmeasured result carries **no severity a client sees, no impact, no effort,
+no remediation, and no weight in any denominator**: the dimension scores
+exactly as it would if the check had never run. It is owned by `swa`,
+because re-running it is our job and there is nothing for the client to do.
+
+Two failure shapes, one rule:
+
+* **The page could not be fetched.** Sightline refuses to score the site.
+  The reason a client reads is one plain sentence naming the host. The
+  exception is logged server-side and never rendered — not in the report,
+  not on the failure page, not in an error field some other product will
+  scrape. `str()` on a transport failure is a urllib3 repr with a memory
+  address in it; it has told a prospect nothing, twice.
+* **A third-party measurement failed.** Retry what is worth retrying
+  (429/5xx, with backoff), then record it as unmeasured. The technical
+  block says what failed and with which status; the plain block says it was
+  not measured this scan, that we will pick it up next time, and that their
+  score is unaffected.
+
+Never interpolate an exception, a stack trace, or a remote error page into
+any rendered view. `sightline/unavailable.py` is the only module that
+phrases a failed measurement, and it builds its sentences from a service
+name and a status code so there is nothing to leak.
+
 ---
 
 ## Where the rules are checked
@@ -73,3 +101,4 @@ claim and a presence claim can both hold on one scan.
 | 7 | review |
 | 8 | `test_report_states_one_disclaimer_once` |
 | 9 | `test_finding_consistency.py` (`contradictions_in`) |
+| 10 | `test_unavailable.py`; `Finding.__post_init__` in both `checks/base.py` and `findings.py` |

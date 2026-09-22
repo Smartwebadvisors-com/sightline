@@ -36,6 +36,17 @@ class Finding:
             raise ValueError(
                 f"invalid severity {self.severity!r} for {self.check_id}"
             )
+        # COPY.md rule 10, enforced at the seam every check passes through.
+        # A measurement that did not happen has nothing to remediate, and a
+        # remediation is what turns it into a finding downstream: it renders
+        # as a fix and Cited lifts it straight into a recommendation.
+        # Build these with unavailable.unmeasured().
+        if self.severity == "unavailable" and self.remediation:
+            raise ValueError(
+                f"{self.check_id}: an unavailable finding cannot carry a "
+                "remediation. A failed measurement is not a finding and "
+                "there is nothing for the client to fix (COPY.md rule 10)."
+            )
 
 
 @dataclass

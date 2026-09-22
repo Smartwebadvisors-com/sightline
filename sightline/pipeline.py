@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from . import db
 from . import findings as findings_mod
+from . import unavailable
 from .checks import (ai_crawler, structured_data, entity_consistency,
                      answer_first, llms_txt, pagespeed, rank, prompt_testing)
 from .checks.base import ScanContext
@@ -73,20 +74,24 @@ def create_pending_scan(url: str) -> int:
 
 
 def _build_context(url: str) -> ScanContext:
-    """Fetch everything a check might need. Raises RuntimeError with a
-    plain-English reason if the target page itself can't be fetched, so an
-    unreachable site never produces a score."""
+    """Fetch everything a check might need. Raises ScanAborted with a
+    client-safe sentence if the target page itself can't be fetched, so an
+    unreachable site never produces a score.
+
+    The transport error is ours to diagnose and nobody else's to read: it
+    goes to the log whole, and what travels out of here is one sentence
+    naming the host. `r.error` is a urllib3 repr with a memory address in
+    it, and it used to be stored on the scan row and rendered on the
+    failure page — and scraped from there into Cited's own error banner.
+    """
     r = fetch_http.fetch_as_browser(url)
     if not r.ok:
+        host = urlparse(r.final_url or url).hostname or ""
+        log.warning("page fetch failed for %s (status=%s): %s",
+                    url, r.status, r.error)
         if r.status:
-            raise RuntimeError(
-                f"page fetch returned HTTP {r.status}; refusing to score "
-                "an unreachable page"
-            )
-        raise RuntimeError(
-            f"page fetch failed: {r.error or 'no response'}; refusing to "
-            "score an unreachable page"
-        )
+            raise unavailable.PageNotScorable(host, r.status)
+        raise unavailable.SiteUnreachable(host)
     final = r.final_url or url
     ctx = ScanContext(
         url=final,
@@ -146,6 +151,16 @@ def run_scan_for(scan_id: int, url: str,
         result["seo"] = _score_seo(scan_id, ctx)
         db.complete_scan(scan_id, status="complete")
         return result
-    except Exception as e:
+    except unavailable.ScanAborted as e:
+        # We chose to stop, and the message was written to be read.
         db.complete_scan(scan_id, status="failed", error=str(e))
+        raise
+    except Exception:
+        # Anything else is a bug or an outage, and `str(e)` on one of those
+        # is a stack-shaped string that ends up rendered on the failure
+        # page. Log it whole; store a line a client can read.
+        log.exception("scan %s failed", scan_id)
+        db.complete_scan(
+            scan_id, status="failed",
+            error=unavailable.DID_NOT_FINISH.format(scan_id=scan_id))
         raise

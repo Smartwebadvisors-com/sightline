@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import requests
 
+from .. import unavailable
 from ..config import settings
 from .base import Finding, ScanContext
 
@@ -22,18 +23,32 @@ CWV_BANDS = {
 }
 
 
-def _fetch(url: str, strategy: str) -> dict | None:
+def _fetch(url: str, strategy: str) -> tuple[dict | None, str]:
+    """Returns (payload, "") or (None, reason).
+
+    Never raises, and never hands back response text. PSI answers a bad
+    key or a server fault with a full HTML error page, and `r.text[:300]`
+    of that used to land verbatim in the rendered report.
+    """
+    service = f"PageSpeed Insights ({strategy})"
     params = {"url": url, "strategy": strategy,
               "key": settings.pagespeed_api_key,
               "category": ["performance", "seo"]}
+    r, why = unavailable.send_with_retry(
+        lambda: requests.get(PSI_URL, params=params,
+                             timeout=settings.http_timeout * 3),
+        service=service,
+    )
+    if r is None:
+        return None, why
+    if r.status_code != 200:
+        # Not retried: a 4xx is a statement about our request, not a blip.
+        return None, unavailable.reason(service, status=r.status_code)
     try:
-        r = requests.get(PSI_URL, params=params,
-                         timeout=settings.http_timeout * 3)
-        if r.status_code != 200:
-            return {"_error": f"HTTP {r.status_code}: {r.text[:300]}"}
-        return r.json()
-    except requests.RequestException as e:
-        return {"_error": str(e)}
+        return r.json(), ""
+    except ValueError:
+        return None, unavailable.reason(
+            service, detail="returned a response we could not read")
 
 
 def _band(metric_key: str, value: float) -> str:
@@ -50,22 +65,19 @@ def _band(metric_key: str, value: float) -> str:
 def run(ctx: ScanContext) -> list[Finding]:
     findings: list[Finding] = []
     if not settings.pagespeed_api_key:
-        return [Finding(
-            check_id=CHECK_ID, item_key="unavailable",
-            severity="unavailable",
-            examined="Core Web Vitals via PageSpeed Insights",
-            observed="PAGESPEED_API_KEY not configured; check skipped.",
-            remediation="Set PAGESPEED_API_KEY to enable Core Web Vitals scoring.",
+        return [unavailable.unmeasured(
+            CHECK_ID, "unavailable",
+            "Core Web Vitals via PageSpeed Insights",
+            unavailable.not_configured("PageSpeed Insights",
+                                       "PAGESPEED_API_KEY"),
         )]
 
     for strategy in ("mobile", "desktop"):
-        data = _fetch(ctx.url, strategy)
-        if not data or "_error" in data:
-            findings.append(Finding(
-                check_id=CHECK_ID, item_key=f"{strategy}:error",
-                severity="unavailable",
-                examined=f"PageSpeed Insights ({strategy})",
-                observed=(data or {}).get("_error", "PSI request failed."),
+        data, why = _fetch(ctx.url, strategy)
+        if data is None:
+            findings.append(unavailable.unmeasured(
+                CHECK_ID, f"{strategy}:error",
+                f"PageSpeed Insights ({strategy})", why,
             ))
             continue
 

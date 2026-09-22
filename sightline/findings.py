@@ -37,6 +37,7 @@ from typing import Any, Iterable
 # Raw check output. Aliased because `Finding` in this module is the
 # client-facing schema; see checks/base.py for the distinction.
 from .checks.base import Finding as CheckOutput
+from . import unavailable as unavailable_mod
 
 IMPACTS = ("high", "medium", "low")
 OWNERS = ("client", "swa")
@@ -84,8 +85,11 @@ class Copy:
 
 @dataclass(frozen=True)
 class Task:
-    impact: str
-    effort_minutes: int
+    # None on both counts for an unmeasured finding: there is no work to
+    # schedule, so there is no impact to rate and no effort to quote
+    # (COPY.md rule 10). Every other outcome carries all three.
+    impact: str | None
+    effort_minutes: int | None
     owner: str
 
 
@@ -215,12 +219,17 @@ PASS_COPY = Copy(
     payoff="Nothing here is holding {brand} back.",
 )
 
+# Rule 10. This is not a finding and must not read like one: no gap, no
+# instruction, no claim about the site — only a statement that a reading
+# did not come back and that it costs the client nothing.
 UNMEASURED_COPY = Copy(
-    title="We re-run this measurement",
-    why=("We could not get a reading on this for {brand} during this scan, so "
-         "we will not claim it is either good or bad."),
-    do="We re-run the measurement and tell you what it says. Nothing for you to do.",
-    payoff="You get a number you can rely on instead of a guess.",
+    title="Not measured this scan",
+    why=("One of the readings we take for {brand} did not come back this "
+         "time. That is a gap in our measurement, not something we found on "
+         "your site, so we will not call it either good or bad."),
+    do="We'll pick it up next time. Nothing for you to do.",
+    payoff=("Your score isn't affected — it is worked out only from what we "
+            "could actually measure."),
 )
 
 # One gap entry per check. Add a "check_id:item_key" key only where the
@@ -325,7 +334,10 @@ TASK_GAP: dict[str, Task] = {
 }
 
 TASK_PASS = Task("low", 0, "client")
-TASK_UNMEASURED = Task("low", 15, "swa")   # we re-measure; client does nothing
+# We re-measure and the client does nothing, so there is nothing to rate or
+# quote. It used to be ("low", 15, "swa"), which put a business impact and a
+# fifteen-minute price tag on a PageSpeed timeout.
+TASK_UNMEASURED = Task(None, None, "swa")
 
 
 @dataclass
@@ -335,20 +347,39 @@ class Finding:
     severity: str                  # scoring input only; never client-facing
     technical: Technical
     plain: Plain
-    impact: str
-    effort_minutes: int
+    impact: str | None             # None only when nothing was measured
+    effort_minutes: int | None     # None only when nothing was measured
     owner: str
     remediation: str = ""          # technical-side fix text, Sightline UI only
     evidence: dict[str, Any] = field(default_factory=dict)
     deduction: float | None = None
 
     def __post_init__(self) -> None:
-        if self.impact not in IMPACTS:
-            raise ValueError(f"invalid impact {self.impact!r} for {self.check_id}")
         if self.owner not in OWNERS:
             raise ValueError(f"invalid owner {self.owner!r} for {self.check_id}")
-        if int(self.effort_minutes) < 0:
-            raise ValueError(f"negative effort for {self.check_id}")
+        # COPY.md rule 10. A measurement that did not happen is not a
+        # finding: it rates no impact, quotes no effort, asks for no fix,
+        # and is ours to re-run. Anything else and it re-enters the report
+        # as work — which is exactly how a PSI timeout became a client task.
+        if self.outcome == UNMEASURED:
+            if self.impact is not None or self.effort_minutes is not None:
+                raise ValueError(
+                    f"{self.check_id}: an unmeasured finding carries no "
+                    "impact and no effort (COPY.md rule 10)")
+            if self.remediation:
+                raise ValueError(
+                    f"{self.check_id}: an unmeasured finding carries no "
+                    "remediation (COPY.md rule 10)")
+            if self.owner != "swa":
+                raise ValueError(
+                    f"{self.check_id}: re-measuring is our work, never the "
+                    "client's (COPY.md rules 3 and 10)")
+        else:
+            if self.impact not in IMPACTS:
+                raise ValueError(
+                    f"invalid impact {self.impact!r} for {self.check_id}")
+            if self.effort_minutes is None or int(self.effort_minutes) < 0:
+                raise ValueError(f"negative effort for {self.check_id}")
         if not (self.technical.title and self.technical.detail):
             raise ValueError(f"empty technical block for {self.check_id}")
         for name in ("title", "why", "do", "payoff"):
@@ -374,6 +405,14 @@ def _copy_and_task(check_id: str, item_key: str,
     key = f"{check_id}:{item_key}"
     copy = PLAIN_GAP.get(key) or PLAIN_GAP.get(check_id)
     task = TASK_GAP.get(key) or TASK_GAP.get(check_id)
+    # Rule 10 outranks everything below, including the ownership
+    # short-circuit. A measurement that did not happen says nothing about
+    # the site, so it cannot carry the check's standing copy or its price:
+    # a prompt_testing run we failed to complete would otherwise ship as
+    # the full 90-minute task, described as though we had done it. Both
+    # paths agree on the owner anyway — unmeasured work is always ours.
+    if outcome == UNMEASURED:
+        return UNMEASURED_COPY, TASK_UNMEASURED
     # Work we perform is ours whatever the measurement said. A standing task
     # does not become a client instruction because this week's sample came
     # back fine, so ownership is a property of the check and is resolved
@@ -422,21 +461,46 @@ def build_all(observations: Iterable[CheckOutput],
 def from_row(row: dict, profile: ClientProfile) -> Finding:
     """Rebuild a Finding from a stored row, so the renderer and the export
     read the same two blocks from the same templates."""
+    # Rule 10 is enforced on the WRITE path (checks.base.Finding refuses an
+    # unavailable finding that carries a remediation). On the read path it
+    # is applied by scrubbing, never by raising: these rows were written by
+    # earlier code, and a report that 500s because of what a check stored
+    # last month is a worse failure than the one the rule prevents. Copy is
+    # derived, not stored (see the module docstring), so dropping a stale
+    # remediation here is the same move the rest of this function makes.
+    unmeasured_row = row["severity"] == "unavailable"
+    stored_remediation = row.get("remediation") or ""
     obs = CheckOutput(
         check_id=row["check_id"], severity=row["severity"],
-        examined=row["examined"], observed=row["observed"],
-        remediation=row.get("remediation") or "",
+        examined=row["examined"],
+        # The stored detail for an unmeasured row is whatever the service
+        # said — including Google's HTML error page and urllib3 reprs, in
+        # the 86 rows already on disk. Rebuilt here for the same reason
+        # the prose is: it is derived text, and the renderer prints it.
+        observed=(unavailable_mod.rebuild_detail(row["examined"],
+                                                 row["observed"])
+                  if unmeasured_row else row["observed"]),
+        remediation="" if unmeasured_row else stored_remediation,
         item_key=row.get("item_key") or "", evidence=row.get("evidence") or {},
     )
     f = build(obs, profile)
     # Stored task fields win over the tables: a finding sold at 15 minutes
     # stays 15 minutes even if we later re-estimate the check.
-    if row.get("impact") in IMPACTS:
-        f = replace(f, impact=row["impact"])
-    if row.get("effort_minutes") is not None:
-        f = replace(f, effort_minutes=int(row["effort_minutes"]))
-    if row.get("owner") in OWNERS:
-        f = replace(f, owner=row["owner"])
+    #
+    # Except when nothing was measured. Those rows were written before rule
+    # 10 and were backfilled with impact='low', effort=15, owner='swa' —
+    # real values for a task that does not exist. Letting them win would
+    # re-inflate a failed measurement into a finding, and because `replace`
+    # re-runs __post_init__, it would raise instead: every historical
+    # report holding a PageSpeed timeout would 500 on render. Nothing was
+    # sold here, so there is nothing for a stored value to protect.
+    if f.outcome != UNMEASURED:
+        if row.get("impact") in IMPACTS:
+            f = replace(f, impact=row["impact"])
+        if row.get("effort_minutes") is not None:
+            f = replace(f, effort_minutes=int(row["effort_minutes"]))
+        if row.get("owner") in OWNERS:
+            f = replace(f, owner=row["owner"])
     f.deduction = row.get("deduction")
     return f
 

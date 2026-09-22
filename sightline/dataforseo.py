@@ -18,6 +18,7 @@ from typing import Any
 
 import requests
 
+from . import unavailable
 from .config import settings
 
 BASE = "https://api.dataforseo.com/v3"
@@ -84,15 +85,22 @@ class DFSResult:
 
     @property
     def reason(self) -> str:
-        """Why this call did not produce data, phrased for a report."""
+        """Why this call did not produce data, phrased for a report.
+
+        Status codes only. `error` is already sanitized by `call()`, and
+        `task_message` is third-party text of unknown shape — neither an
+        exception nor a remote error page belongs in a rendered view
+        (COPY.md rule 10). The raw message stays in the evidence blob.
+        """
         if self.error:
-            return f"request failed: {self.error}"
+            return self.error
         if self.unauthorized:
-            return (f"endpoint not available on this account: HTTP "
-                    f"{self.http_status} / task status {self.task_status} "
-                    f"({self.task_message})")
-        return (f"unexpected response: HTTP {self.http_status} / task "
-                f"{self.task_status} ({self.task_message})")
+            return (f"endpoint not authorized on this account (HTTP "
+                    f"{self.http_status} / task {self.task_status}); "
+                    "nothing was measured this scan.")
+        return (f"DataForSEO returned an unexpected response (HTTP "
+                f"{self.http_status} / task {self.task_status}); nothing "
+                "was measured this scan.")
 
 
 def configured() -> bool:
@@ -113,27 +121,38 @@ def call(endpoint: str, payload: list[dict],
          headers: dict[str, str] | None = None) -> DFSResult:
     """POST one endpoint. Never raises — transport and protocol failures
     come back as a DFSResult whose `ok` is False."""
+    service = f"DataForSEO {endpoint}"
     headers = headers or auth_header()
     if headers is None:
         return DFSResult(endpoint=endpoint,
-                         error="DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD "
-                               "not configured")
-    try:
-        r = requests.post(f"{BASE}/{endpoint}", headers=headers,
-                          json=payload, timeout=settings.http_timeout * 3)
-    except requests.RequestException as e:
-        return DFSResult(endpoint=endpoint, error=str(e))
+                         error=unavailable.not_configured(
+                             service, "DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD"))
+
+    # Rate limiting and transient 5xx are retried with backoff; anything
+    # else is read as-is. Every `error` set below is already client-safe,
+    # so DFSResult.reason can be rendered without a second sanitize pass.
+    r, why = unavailable.send_with_retry(
+        lambda: requests.post(f"{BASE}/{endpoint}", headers=headers,
+                              json=payload,
+                              timeout=settings.http_timeout * 3),
+        service=service,
+    )
+    if r is None:
+        return DFSResult(endpoint=endpoint, error=why)
 
     try:
         body = r.json()
     except ValueError:
         return DFSResult(endpoint=endpoint, http_status=r.status_code,
-                         error=f"non-JSON response: {r.text[:200]}")
+                         error=unavailable.reason(
+                             service,
+                             detail="returned a response we could not read"))
 
     tasks = (body or {}).get("tasks") or []
     if not tasks:
         return DFSResult(endpoint=endpoint, http_status=r.status_code,
-                         error="no tasks in response")
+                         error=unavailable.reason(
+                             service, detail="returned no task to read"))
     task = tasks[0] or {}
     result = (task.get("result") or [None])[0]
     return DFSResult(

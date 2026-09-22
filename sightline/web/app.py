@@ -10,6 +10,7 @@ from flask import (Flask, Response, abort, jsonify, redirect,
                    render_template, request, url_for)
 
 from .. import db
+from .. import unavailable
 from ..pipeline import create_pending_scan
 from ..render.html import render_scan
 from ..render.json_export import export_scan
@@ -75,7 +76,12 @@ def create_app() -> Flask:
         if scan["status"] in ("running", "queued"):
             return render_template("pending.html", scan=scan), 200
         if scan["status"] == "failed":
-            return render_template("failed.html", scan=scan), 200
+            # Never `scan.error` directly: rows written before
+            # unavailable.py hold raw tracebacks, and Cited scrapes this
+            # page's banner into its own user-facing error.
+            return render_template(
+                "failed.html", scan=scan,
+                message=unavailable.failure_message(scan)), 200
         wv_id = _current_wv_id()
         # Ensure the scan has scores under the current weights version.
         # apply_to_scan is idempotent (ON CONFLICT DO UPDATE), so this is
