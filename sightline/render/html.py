@@ -59,6 +59,22 @@ def _score_color(score) -> str:
     return "#8a1616"
 
 
+def _without_repeated_heading(title: str, detail: str) -> str:
+    """The card heading is `title`. Don't start the body with it too.
+
+    `unavailable.reason()` leads with the service name, and that same
+    string is the card heading. Left as-is, the heading prints twice.
+    """
+    body = (detail or "").strip()
+    head = (title or "").strip()
+    if not head or not body.lower().startswith(head.lower()):
+        return body
+    rest = body[len(head):].lstrip(" \t.;:—-")
+    if not rest:
+        return body
+    return rest[0].upper() + rest[1:]
+
+
 def _impact_pill(impact: str) -> str:
     c = IMPACT_COLOR.get(impact, "#666")
     return f'<span class="impact" style="background:{c}">{_esc(impact)}</span>'
@@ -491,7 +507,9 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
         for f in notmeasured:
             p.append("<div class='nm'>")
             p.append(f"<div class='nm-head'>{_esc(f.technical.title)}</div>")
-            p.append(f"<div class='nm-body'>{_esc(f.technical.detail)}</div>")
+            p.append("<div class='nm-body'>"
+                     f"{_esc(_without_repeated_heading(f.technical.title, f.technical.detail))}"
+                     "</div>")
             p.append("<div class='nm-task'>"
                      "<span><b>Status</b> not measured</span>"
                      f"<span><b>Owner</b> {_esc(OWNER_LABEL['swa'])}</span>"
