@@ -164,7 +164,7 @@ class TestTaskFields(unittest.TestCase):
         f = F.build(CheckOutput(check_id="pagespeed", severity="pass",
                                 examined="x", observed="y"), PROFILE)
         self.assertEqual(f.owner, "client")
-        self.assertIn("Keep", f.plain.title)
+        self.assertIn("Leave your page speed", f.plain.title)
         self.assertNotIn("Speed up", f.plain.title)
 
     def test_prompt_testing_is_one_finding_that_we_own(self):
@@ -223,8 +223,59 @@ class TestTaskFields(unittest.TestCase):
         passed = F.build(CheckOutput(
             check_id="pagespeed", item_key="desktop:CLS", severity="pass",
             examined="x", observed="y"), PROFILE)
-        self.assertIn("Keep", passed.plain.title)
-        self.assertNotIn("computer", passed.plain.title.lower())
+        self.assertEqual(passed.plain.title,
+                         "Leave page speed on a computer as it is")
+        self.assertNotIn("Speed up", passed.plain.title)
+
+    def test_pass_titles_agree_with_their_subject(self):
+        details = F.build(CheckOutput(
+            check_id="entity_consistency", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        pages = F.build(CheckOutput(
+            check_id="answer_first", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        access = F.build(CheckOutput(
+            check_id="ai_crawler", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        self.assertEqual(details.plain.title,
+                         "Leave your business details as they are")
+        self.assertEqual(pages.plain.title,
+                         "Leave your question-and-answer pages as they are")
+        self.assertEqual(access.plain.title,
+                         "Keep letting assistants read your site")
+        self.assertNotIn("as it is", details.plain.title)
+        self.assertNotIn("as it is", access.plain.title)
+
+    def test_search_setup_does_not_borrow_the_speed_sentence(self):
+        passed = F.build(CheckOutput(
+            check_id="pagespeed", item_key="seo:is-crawlable",
+            severity="pass", examined="x", observed="y"), PROFILE)
+        gap = F.build(CheckOutput(
+            check_id="pagespeed", item_key="seo:document-title",
+            severity="medium", examined="x", observed="y"), PROFILE)
+        category = F.build(CheckOutput(
+            check_id="pagespeed", item_key="desktop:seo_category",
+            severity="info", examined="x", observed="y"), PROFILE)
+        self.assertEqual(passed.plain.title, "Leave the page open to search")
+        self.assertEqual(gap.plain.title, "Give the page a clear title")
+        self.assertIn(PROFILE.category, gap.plain.why)
+        self.assertEqual(category.plain.title,
+                         "Leave how search engines read the page as it is")
+        for f in (passed, gap, category):
+            blob = f"{f.plain.title} {f.plain.why}".lower()
+            self.assertNotIn("page speed", blob)
+            self.assertNotIn("speed up", blob)
+            self.assertNotIn("on phones", blob)
+        for item_key, copy in F.PAGESPEED_SEO_GAP.items():
+            built = F.build(CheckOutput(
+                check_id="pagespeed", item_key=item_key, severity="medium",
+                examined="x", observed="y"), PROFILE)
+            blob = " ".join([built.plain.title, built.plain.why,
+                             built.plain.do, built.plain.payoff]).lower()
+            for banned in BANNED_IN_PLAIN:
+                self.assertNotIn(banned, blob, f"{item_key}: {banned!r}")
+            self.assertNotIn("speed up", built.plain.title.lower(), item_key)
+            self.assertNotIn("page speed", blob, item_key)
 
     def test_unmeasured_plain_names_the_failed_reading(self):
         desktop = F.build(CheckOutput(

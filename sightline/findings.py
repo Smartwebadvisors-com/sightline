@@ -239,13 +239,26 @@ READING = {
     ("rank", "endpoint:backlinks"): "which other sites link to you",
 }
 
+# The shared pass body. The title is chosen per check in PASS_TITLE,
+# because one "Keep {subject} as it is" line cannot agree with a plural
+# subject and cannot hold "the access assistants have to your site".
 PASS_COPY = Copy(
-    title="Keep {subject} as it is",
+    title="",
     why=("{brand} already has this right. It is one of the things an assistant "
          "checks before it will describe a {category} with any confidence."),
     do="Nothing to change. Keep it this way the next time the site is rebuilt.",
     payoff="Nothing here is holding {brand} back.",
 )
+
+PASS_TITLE = {
+    "ai_crawler": "Keep letting assistants read your site",
+    "structured_data": "Leave the machine-readable description as it is",
+    "entity_consistency": "Leave your business details as they are",
+    "answer_first": "Leave your question-and-answer pages as they are",
+    "llms_txt": "Leave your assistant summary page as it is",
+    "pagespeed": "Leave your page speed as it is",
+    "rank": "Leave your search footprint as it is",
+}
 
 # Rule 10. This is not a finding and must not read like one: no gap, no
 # instruction, no claim about the site — only a statement that a reading
@@ -374,6 +387,95 @@ PAGESPEED_DESKTOP_GAP = Copy(
     payoff="Faster pages get seen by more customers and read more often by assistants.",
 )
 
+# Search-setup readings ride on the pagespeed check, but they are not speed.
+# A crawlability gap used to say "Speed up your pages on phones" and then
+# collapse into that card. Not PLAIN_GAP keys — see _copy_and_task.
+_SEO_DO = ("Ask whoever maintains your site to correct this on the page "
+           "template, then check the search result for that address.")
+_SEO_PAYOFF = "Search engines can show the page you meant, to the customer who asked."
+
+PAGESPEED_SEO_GAP = {
+    "seo:is-crawlable": Copy(
+        title="Let search engines read this page",
+        why=("{brand_s} site tells search engines not to read it, so a "
+             "{category} customer searching for you never reaches the page."),
+        do="Ask your developer to allow search engines to read the pages you want found.",
+        payoff="The pages you want found can show up in search.",
+    ),
+    "seo:robots-txt": Copy(
+        title="Give search engines clear instructions",
+        why=("Search engines are missing the instructions for which pages on "
+             "{brand_s} site they may read, so they may skip pages a "
+             "{category} customer is looking for."),
+        do="Ask your developer to publish those instructions and allow the pages you want found.",
+        payoff="The pages you want found are the ones that get visited.",
+    ),
+    "seo:canonical": Copy(
+        title="Give each page one address",
+        why=("The same {brand} page is available at more than one address, so "
+             "search engines split its credit and a {category} customer may "
+             "be shown the wrong one."),
+        do="Ask your developer to point every version of a page at the single address you want found.",
+        payoff="The address you chose is the one that gets the credit.",
+    ),
+    "seo:hreflang": Copy(
+        title="Say which language each page is for",
+        why=("Pages on {brand_s} site do not say which language or country "
+             "they are for, so a {category} customer can be shown the wrong "
+             "version."),
+        do="Ask your developer to mark the language of each version of the page.",
+        payoff="The customer sees the version written for them.",
+    ),
+    "seo:http-status-code": Copy(
+        title="Serve a working page at this address",
+        why=("{brand_s} address answers with an error instead of a page, so "
+             "a {category} customer and the search engines both leave."),
+        do="Ask your developer to make that address return the page, or point the link at a page that exists.",
+        payoff="The address you publish is a page someone can open.",
+    ),
+    "seo:viewport": Copy(
+        title="Make the page fit a phone screen",
+        why=("{brand_s} page does not fit a phone screen, so a {category} "
+             "customer has to pinch and scroll sideways and often gives up."),
+        do="Ask your developer to make the layout match the width of a phone.",
+        payoff="A customer on a phone can read the page without fighting it.",
+    ),
+    "seo:document-title": Copy(
+        title="Give the page a clear title",
+        why=("The page on {brand_s} site has no clear title, so a search "
+             "result cannot tell a {category} customer what they will get."),
+        do="Ask your developer to put a short, specific title on the page.",
+        payoff="The search result says what the page is before anyone clicks.",
+    ),
+    "seo:meta-description": Copy(
+        title="Summarize the page for search results",
+        why=("Search results for {brand} have nothing short to show under the "
+             "title, so a {category} customer sees a scrap of text from the "
+             "page instead of a reason to visit."),
+        do="Ask your developer to add a one- or two-sentence summary of the page.",
+        payoff="The result under the title is a reason to click.",
+    ),
+}
+
+PAGESPEED_SEO_GAP_DEFAULT = Copy(
+    title="Fix how search engines read this page",
+    why=("{brand_s} page is hard for search engines to read, so a {category} "
+         "customer searching for you may never be offered it."),
+    do=_SEO_DO,
+    payoff=_SEO_PAYOFF,
+)
+
+PAGESPEED_SEO_PASS_TITLE = {
+    "seo:is-crawlable": "Leave the page open to search",
+    "seo:robots-txt": "Leave the instructions for search engines as they are",
+    "seo:canonical": "Leave each page at one address",
+    "seo:hreflang": "Leave the language marking as it is",
+    "seo:http-status-code": "Leave this address serving a real page",
+    "seo:viewport": "Leave the page fitting a phone screen",
+    "seo:document-title": "Leave the page title as it is",
+    "seo:meta-description": "Leave the search-result summary as it is",
+}
+
 TASK_PASS = Task("low", 0, "client")
 # We re-measure and the client does nothing, so there is nothing to rate or
 # quote. It used to be ("low", 15, "swa"), which put a business impact and a
@@ -450,6 +552,28 @@ def _fill(copy: Copy, profile: ClientProfile, subject: str,
                  payoff=f(copy.payoff))
 
 
+def _pagespeed_is_seo(item_key: str) -> bool:
+    key = item_key or ""
+    return key.startswith("seo:") or key.endswith(":seo_category")
+
+
+def _pass_copy(check_id: str, item_key: str) -> Copy:
+    """A grammatical pass title for this check. Page-speed search setup
+    does not borrow the speed sentence."""
+    key = item_key or ""
+    if check_id == "pagespeed" and _pagespeed_is_seo(key):
+        title = (PAGESPEED_SEO_PASS_TITLE.get(key)
+                 or "Leave how search engines read the page as it is")
+    elif check_id == "pagespeed" and key.startswith("desktop:"):
+        title = "Leave page speed on a computer as it is"
+    elif check_id == "pagespeed" and key.startswith("mobile:"):
+        title = "Leave page speed on phones as it is"
+    else:
+        title = PASS_TITLE.get(check_id) or "Leave this as it is"
+    return Copy(title=title, why=PASS_COPY.why, do=PASS_COPY.do,
+                payoff=PASS_COPY.payoff)
+
+
 def _copy_and_task(check_id: str, item_key: str,
                    outcome: str) -> tuple[Copy, Task]:
     key = f"{check_id}:{item_key}"
@@ -463,11 +587,14 @@ def _copy_and_task(check_id: str, item_key: str,
     # paths agree on the owner anyway — unmeasured work is always ours.
     if outcome == UNMEASURED:
         return UNMEASURED_COPY, TASK_UNMEASURED
-    # Desktop and mobile are different readings. They used to share the
-    # phone template, so desktop:TBT shipped as "Speed up your pages on
-    # phones". A pass still uses PASS_COPY below; only a desktop gap
-    # takes this wording. Not registered in PLAIN_GAP — see the constant.
-    if (check_id == "pagespeed" and outcome == GAP
+    # Search-setup readings are not speed, even though the check is
+    # pagespeed. A pass is handled below. A gap must not say "phones".
+    if check_id == "pagespeed" and _pagespeed_is_seo(item_key) and outcome == GAP:
+        copy = PAGESPEED_SEO_GAP.get(item_key) or PAGESPEED_SEO_GAP_DEFAULT
+    # Desktop and mobile speed are different readings. They used to share
+    # the phone template, so desktop:TBT shipped as "Speed up your pages
+    # on phones". A pass still uses _pass_copy below. Not a PLAIN_GAP key.
+    elif (check_id == "pagespeed" and outcome == GAP
             and str(item_key).startswith("desktop:")):
         copy = PAGESPEED_DESKTOP_GAP
     # Work we perform is ours whatever the measurement said. A standing task
@@ -479,7 +606,7 @@ def _copy_and_task(check_id: str, item_key: str,
     if task is not None and task.owner == "swa":
         return copy, task
     if outcome == PASS:
-        return PASS_COPY, TASK_PASS
+        return _pass_copy(check_id, item_key), TASK_PASS
     if outcome == UNMEASURED:
         return UNMEASURED_COPY, TASK_UNMEASURED
     if copy is None or task is None:
