@@ -609,14 +609,36 @@ def peer_sentence(score: float | None, peers: dict | None) -> str:
             f"sites we have scanned.")
 
 
+# Longer clauses first. Later findings keep a real sentence and drop the
+# trade. Substituting the word "business" produced "business work".
+# Cited applies the same clauses to feeds that were saved before this.
+_CATEGORY_CLAUSES = (
+    ("what a {category} offers", "what you offer"),
+    ("that you are a {category}", "what you do"),
+    ("describe a {category}", "describe you"),
+    ("for a {category}", "about you"),
+    ("Slow {category} sites", "Slow sites"),
+    ("a {category} customer", "a customer"),
+    ("{category} options", "options"),
+    ("{category} work", "your work"),
+)
+
+
+def without_category(text: str, category: str) -> str:
+    """Drop the trade from one sentence. A clause we do not recognise stays,
+    so an unknown wording is never rewritten into 'business'."""
+    for pattern, replacement in _CATEGORY_CLAUSES:
+        text = text.replace(pattern.format(category=category), replacement)
+    return text
+
+
 def thin_repeated_category(entries: list[dict], category: str) -> None:
     """Keep the category phrase on the first finding that uses it.
 
     `build()` still names the category on every finding, so one finding
-    stays specific and `plain.why` cannot read generic in isolation. A
-    full report was repeating it once per finding. Later findings say
-    "business". The category "business" is left untouched: replacing it
-    would rewrite "your business details".
+    stays specific. A full report was repeating it once per finding.
+    Later findings use the clause list above. The category "business" is
+    left untouched: rewriting it would change "your business details".
     """
     phrase = (category or "").strip()
     if not phrase or phrase.lower() == "business":
@@ -634,7 +656,7 @@ def thin_repeated_category(entries: list[dict], category: str) -> None:
         for key in ("title", "why", "do", "payoff"):
             text = plain.get(key)
             if isinstance(text, str):
-                plain[key] = text.replace(phrase, "business")
+                plain[key] = without_category(text, phrase)
 
 
 def disclaimer(profile: ClientProfile) -> str:

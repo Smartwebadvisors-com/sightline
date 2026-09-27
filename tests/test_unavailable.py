@@ -545,7 +545,7 @@ class TestFailedScanJsonCarriesTheReason(unittest.TestCase):
 
 
 class TestCategoryIsNamedOnceInTheFeed(unittest.TestCase):
-    def test_later_findings_say_business(self):
+    def test_later_findings_drop_the_trade(self):
         payload = export_fixture()
         phrase = payload["scan"]["category"]
         self.assertEqual(phrase, "contractor")
@@ -553,11 +553,19 @@ class TestCategoryIsNamedOnceInTheFeed(unittest.TestCase):
                 if phrase in " ".join(f["plain"].values())]
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["item_key"], "LCP")
-        # The pass still explains itself; it just stops repeating the trade.
         passed = next(f for f in payload["findings"]
                       if f["item_key"] == "keyword_count")
-        self.assertIn("a business", passed["plain"]["why"])
+        self.assertIn("describe you", passed["plain"]["why"])
         self.assertNotIn(phrase, passed["plain"]["why"])
+        self.assertNotIn("business work", passed["plain"]["why"])
+
+    def test_an_unknown_clause_is_left_alone(self):
+        self.assertEqual(
+            F.without_category("a question about contractor work", "contractor"),
+            "a question about your work")
+        self.assertEqual(
+            F.without_category("the contractor on the sign", "contractor"),
+            "the contractor on the sign")
 
     def test_the_heading_is_the_only_not_measured_title_in_html(self):
         html = render_fixture()
