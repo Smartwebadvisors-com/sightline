@@ -229,6 +229,24 @@ class TestStoredRowsSurviveTheRule(unittest.TestCase):
         assert_no_exception_text(self, f.technical.detail, "rebuilt detail")
         self.assertIn("returned HTTP 500", f.technical.detail)
 
+    def test_a_sentence_we_already_wrote_is_kept(self):
+        """Rebuilding a configured-gap sentence used to replace it with
+        "{examined} did not return a measurement", so the card heading
+        printed again as the first words of the body."""
+        observed = unavailable.not_configured(
+            "PageSpeed Insights", "PAGESPEED_API_KEY")
+        detail = unavailable.rebuild_detail(
+            "Core Web Vitals via PageSpeed Insights", observed)
+        self.assertEqual(detail, observed)
+        self.assertFalse(
+            detail.startswith("Core Web Vitals via PageSpeed Insights"))
+
+    def test_a_safe_ending_does_not_protect_a_traceback(self):
+        dirty = DNS_EXCEPTION_TEXT + " nothing was measured this scan."
+        detail = unavailable.rebuild_detail(
+            "PageSpeed Insights (mobile)", dirty)
+        assert_no_exception_text(self, detail, "rebuild")
+
 
 # --------------------------------------------------------------------------
 # the score must not notice
@@ -405,7 +423,7 @@ class TestNothingLeaksIntoARenderedView(unittest.TestCase):
     def test_the_report_says_what_failed_in_the_technical_view(self):
         html = render_fixture()
         self.assertIn("Not measured this scan", html)
-        self.assertIn("returned HTTP 500", html)
+        self.assertIn("Returned HTTP 500", html)
 
     def test_findings_json_gives_cited_nulls_not_a_task(self):
         entries = [f for f in export_fixture()["findings"]
@@ -602,6 +620,17 @@ class TestCitedReadsUnmeasuredAsNotMeasured(unittest.TestCase):
         for entry in parsed:
             self.assertNotIn("nm-body", entry["chunk"])
             self.assertNotIn("returned HTTP 500", entry["chunk"])
+
+    def test_the_card_heading_is_not_the_first_words_of_the_body(self):
+        html = render_fixture()
+        cards = re.findall(
+            r"<div class='nm-head'>(.*?)</div>"
+            r"<div class='nm-body'>(.*?)</div>",
+            html)
+        self.assertGreaterEqual(len(cards), 2)
+        for head, body in cards:
+            self.assertFalse(body.startswith(head), body)
+            self.assertNotIn(head, body)
 
     def test_the_not_measured_markup_avoids_every_class_cited_reads(self):
         html = render_fixture()

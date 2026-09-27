@@ -189,6 +189,24 @@ def send_with_retry(send: Callable[[], Any], *, service: str,
 
 
 _HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+_SAFE_ENDING = "nothing was measured this scan."
+# A sentence we wrote ourselves ends with _SAFE_ENDING. An old row can
+# still end that way and hide a traceback or an error page after it, so
+# those markers force a rebuild even when the ending looks familiar.
+_LEAK_MARKERS = (
+    "traceback", "urllib3", "httpsconnectionpool", "errno",
+    "nameresolution", "0x", "max retries", "errored_document_request",
+    "lighthouse returned", "object at", "requests.exceptions",
+    "<html", "<!doctype",
+)
+
+
+def _already_ours(text: str) -> bool:
+    """True when `text` is a sentence this module is allowed to print."""
+    if not text.endswith(_SAFE_ENDING):
+        return False
+    lowered = text.lower()
+    return not any(marker in lowered for marker in _LEAK_MARKERS)
 
 
 def rebuild_detail(examined: str, observed: str) -> str:
@@ -201,8 +219,16 @@ def rebuild_detail(examined: str, observed: str) -> str:
     stored (see findings.py), so the fix is to rebuild this sentence on
     read rather than migrate 86 rows: keep the status code, which is the
     only part that was ever information, and drop the rest.
+
+    A sentence this module already wrote is left alone. Rebuilding it
+    used to replace "PageSpeed Insights is not configured …" with
+    "{examined} did not return a measurement", which prints the card
+    heading a second time and throws away the real reason.
     """
-    match = _HTTP_STATUS.search(observed or "")
+    text = (observed or "").strip()
+    if _already_ours(text):
+        return text
+    match = _HTTP_STATUS.search(text)
     if match:
         return reason(examined, status=int(match.group(1)))
     return reason(examined, detail="did not return a measurement")
