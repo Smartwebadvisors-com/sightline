@@ -77,8 +77,9 @@ def create_app() -> Flask:
             return render_template("pending.html", scan=scan), 200
         if scan["status"] == "failed":
             # Never `scan.error` directly: rows written before
-            # unavailable.py hold raw tracebacks, and Cited scrapes this
-            # page's banner into its own user-facing error.
+            # unavailable.py hold raw tracebacks. The client sentence is
+            # failure_message(); the findings.json 409 body carries the
+            # same sentence so Cited does not read this page.
             return render_template(
                 "failed.html", scan=scan,
                 message=unavailable.failure_message(scan)), 200
@@ -98,7 +99,12 @@ def create_app() -> Flask:
         if not scan:
             abort(404)
         if scan["status"] != "complete":
-            return jsonify({"error": f"scan is {scan['status']}"}), 409
+            body = {"error": f"scan is {scan['status']}"}
+            # The sentence a client may read. Same whitelist as the failure
+            # page. Running and queued scans have no failure to explain.
+            if scan["status"] == "failed":
+                body["reason"] = unavailable.failure_message(scan)
+            return jsonify(body), 409
         wv_id = _current_wv_id()
         # Cited polls this. apply_to_scan rewrites one score row per finding
         # on every call, so score only when this scan is not already current

@@ -5,8 +5,7 @@ act on:
 
   * the page will not load, and `str(requests_exception)` gets rendered;
   * a third-party check fails, and it becomes a finding with a severity, a
-    price and a fix — including, via Cited's scraper, a recommendation
-    reading "Fix the finding on the page, then rescan in Sightline."
+    price and a fix.
 
 Every test here is offline. The renderer and the exporter are driven
 through fake db modules, so the suite makes no network call and touches no
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -117,7 +115,10 @@ class TestPageSpeedFailure(unittest.TestCase):
             self.assertIsNone(f.effort_minutes)
             self.assertEqual(f.owner, "swa")
             self.assertEqual(f.remediation, "")
-            self.assertEqual(f.plain.title, "Not measured this scan")
+            self.assertIn(f.plain.title, f.plain.why)
+            self.assertIn("was not measured", f.plain.why)
+            self.assertNotEqual(f.plain.title, "Not measured this scan")
+            self.assertNotIn("One of the readings", f.plain.why)
 
     def test_the_error_page_body_never_reaches_the_finding(self):
         """Regression: `observed` was f"HTTP {code}: {r.text[:300]}"."""
@@ -415,7 +416,10 @@ class TestNothingLeaksIntoARenderedView(unittest.TestCase):
             self.assertIsNone(entry["impact"])
             self.assertIsNone(entry["effort_minutes"])
             self.assertEqual(entry["owner"], "swa")
-            self.assertEqual(entry["plain"]["title"], "Not measured this scan")
+            self.assertIn(entry["plain"]["title"], entry["plain"]["why"])
+            self.assertIn("was not measured", entry["plain"]["why"])
+            self.assertNotEqual(entry["plain"]["title"], "Not measured this scan")
+            self.assertNotIn("One of the readings", entry["plain"]["why"])
 
     def test_the_failure_page_never_prints_a_stored_exception(self):
         """Legacy rows hold raw tracebacks; the view whitelists ours."""
@@ -504,120 +508,78 @@ class TestUnreachablePageIsNotScored(unittest.TestCase):
         self.assertIn("scan #169", completed["error"])
 
 
-# --------------------------------------------------------------------------
-# the Cited shim
-# --------------------------------------------------------------------------
+class TestFailedScanJsonCarriesTheReason(unittest.TestCase):
+    """Cited used to GET the HTML report and scrape class="banner". The
+    409 body of findings.json now carries the same whitelisted sentence."""
 
-class TestCitedReadsUnmeasuredAsNotMeasured(unittest.TestCase):
-    """Cited's ACTUAL regexes and mapping functions, copied from
-    /opt/cited/src/lib/sightline/dashboard.ts, run against a real rendered
-    report. See tests/test_findings_copy.py::TestCitedScrapingCoupling for
-    the severity span these tests are the other half of.
+    def _get(self, scan):
+        from sightline.web import app as app_mod
 
-    The trap: `statusOf` maps 'unavailable' to 'partial', which is not
-    green — but `findingsToRecs` filters on !/pass|info/, which
-    'unavailable' does not match. So while an unmeasured result was a
-    finding block, Cited turned every PageSpeed timeout into a
-    recommendation reading "Fix the finding on the page, then rescan in
-    Sightline." No severity string escapes both: the only value that keeps
-    Cited off green is the one that produces the CTA. Hence a section
-    Cited's block regex cannot start on.
+        with mock.patch.object(app_mod.db, "scan", lambda _id: dict(scan)):
+            client = app_mod.create_app().test_client()
+            return client.get("/report/9/findings.json")
 
-    Delete this class only when Cited reads findings.json.
-    """
+    def test_a_failed_scan_returns_the_client_sentence(self):
+        sentence = str(unavailable.SiteUnreachable("example.com"))
+        res = self._get({"id": 9, "status": "failed", "error": sentence})
+        self.assertEqual(res.status_code, 409)
+        body = res.get_json()
+        self.assertEqual(body["error"], "scan is failed")
+        self.assertEqual(body["reason"], sentence)
+        assert_no_exception_text(self, body["reason"], "json reason")
 
-    # dashboard.ts:82
-    BLOCK = re.compile(
-        r"<div class='finding[^']*'>([\s\S]*?)</div>\s*"
-        r"(?=<div class='finding|<h2|</body>)")
-    SEV = re.compile(r"""class=['"]sev['"][^>]*>([\s\S]*?)</span>""", re.I)
-    BODY = re.compile(r"""class=['"]body['"]>([\s\S]*?)</div>""", re.I)
-    REMED = re.compile(r"""class=['"]remed['"]>([\s\S]*?)</div>""", re.I)
+    def test_a_legacy_traceback_is_not_the_reason(self):
+        res = self._get({
+            "id": 9, "status": "failed",
+            "error": f"page fetch failed: {DNS_EXCEPTION_TEXT}",
+        })
+        body = res.get_json()
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("scan #9", body["reason"])
+        assert_no_exception_text(self, body["reason"], "json reason")
 
-    @staticmethod
-    def _status_of(severity: str) -> str:
-        """findingsToChecks.statusOf"""
-        s = severity.lower()
-        if s in ("pass", "info"):
-            return "pass"
-        if s in ("low", "medium", "unavailable"):
-            return "partial"
-        return "fail"
+    def test_a_running_scan_has_no_failure_reason(self):
+        res = self._get({"id": 9, "status": "running", "error": None})
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.get_json(), {"error": "scan is running"})
 
-    @staticmethod
-    def _is_recommendation(severity: str) -> bool:
-        """findingsToRecs' filter"""
-        return not re.search(r"pass|info", severity, re.I)
 
-    def _parsed(self):
+class TestCategoryIsNamedOnceInTheFeed(unittest.TestCase):
+    def test_later_findings_drop_the_trade(self):
+        payload = export_fixture()
+        phrase = payload["scan"]["category"]
+        self.assertEqual(phrase, "contractor")
+        hits = [f for f in payload["findings"]
+                if phrase in " ".join(f["plain"].values())]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["item_key"], "LCP")
+        passed = next(f for f in payload["findings"]
+                      if f["item_key"] == "keyword_count")
+        self.assertIn("describe you", passed["plain"]["why"])
+        self.assertNotIn(phrase, passed["plain"]["why"])
+        self.assertNotIn("business work", passed["plain"]["why"])
+
+    def test_an_unknown_clause_is_left_alone(self):
+        self.assertEqual(
+            F.without_category("a question about contractor work", "contractor"),
+            "a question about your work")
+        self.assertEqual(
+            F.without_category("the contractor on the sign", "contractor"),
+            "the contractor on the sign")
+
+    def test_the_heading_is_the_only_not_measured_title_in_html(self):
         html = render_fixture()
-        out = []
-        for chunk in self.BLOCK.findall(html):
-            match = self.SEV.search(chunk)
-            # Cited's silent default. A miss here is not an error: it
-            # reads as 'info' -> 'pass' -> green.
-            severity = match.group(1).strip() if match else "info"
-            out.append({"severity": severity, "defaulted": match is None,
-                        "chunk": chunk})
-        return html, out
+        self.assertEqual(html.count("Not measured this scan"), 1)
+        self.assertNotIn('class="sev"', html)
+        self.assertNotIn("class='sev'", html)
 
-    def test_no_unmeasured_block_is_parsed_as_a_finding(self):
-        _, parsed = self._parsed()
-        self.assertTrue(parsed, "the scored findings must still be parsed")
-        for entry in parsed:
-            self.assertNotEqual(entry["severity"], "unavailable")
-
-    def test_nothing_defaults_to_green(self):
-        """The failure mode of the shim: a missed match reads as 'pass'.
-
-        A finding that really did pass may of course read as pass. What
-        must not happen is a block whose severity Cited could not find,
-        because that is indistinguishable from a clean site.
-        """
-        _, parsed = self._parsed()
-        for entry in parsed:
-            self.assertFalse(entry["defaulted"],
-                             "Cited would default this block to info/pass")
-        gaps = [e for e in parsed
-                if e["severity"] in ("critical", "high", "medium", "low")]
-        self.assertTrue(gaps, "fixture must contain a scored gap")
-        for entry in gaps:
-            self.assertNotEqual(self._status_of(entry["severity"]), "pass")
-
-    def test_no_unmeasured_result_becomes_a_recommendation(self):
-        """The CTA rule 10 forbids, at the only boundary that can emit it."""
-        _, parsed = self._parsed()
-        recs = [e for e in parsed if self._is_recommendation(e["severity"])]
-        for entry in recs:
-            self.assertNotIn("Not measured", entry["chunk"])
-            self.assertNotIn("nothing was measured", entry["chunk"])
-            self.assertNotEqual(entry["severity"], "unavailable")
-
-    def test_the_not_measured_section_leaks_into_no_finding_block(self):
-        """The <h2> is load-bearing. Inline between two finding divs, the
-        lookahead makes the PRECEDING block swallow this content, and its
-        `remed` becomes that finding's fix."""
-        html, parsed = self._parsed()
-        self.assertIn("<div class='nm'>", html, "fixture must exercise it")
-        for entry in parsed:
-            self.assertNotIn("nm-body", entry["chunk"])
-            self.assertNotIn("returned HTTP 500", entry["chunk"])
-
-    def test_the_not_measured_markup_avoids_every_class_cited_reads(self):
-        html = render_fixture()
-        section = html.split("Not measured this scan", 1)[1].split("<h2", 1)[0]
-        self.assertNotIn("class='finding", section)
-        self.assertIsNone(self.SEV.search(section))
-        self.assertIsNone(self.BODY.search(section))
-        self.assertIsNone(self.REMED.search(section))
-
-    def test_the_reason_is_documented_where_someone_would_rename_it(self):
-        import inspect
-        from sightline.render import html as html_mod
-
-        src = inspect.getsource(html_mod.render_scan)
-        self.assertIn("Cited", src)
-        self.assertIn("findings.json", src)
+    def test_a_poor_pagespeed_reading_is_high_impact(self):
+        """Stored impact on this row is medium, the old per-check constant.
+        Severity is high, so the feed says high."""
+        row = next(f for f in export_fixture()["findings"]
+                   if f["item_key"] == "LCP")
+        self.assertEqual(row["impact"], "high")
+        self.assertEqual(row["effort_minutes"], 240)
 
 
 if __name__ == "__main__":

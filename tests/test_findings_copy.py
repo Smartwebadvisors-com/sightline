@@ -2,7 +2,6 @@
 catch the mechanical violations, which are the ones that actually ship."""
 from __future__ import annotations
 
-import re
 import unittest
 
 from sightline import findings as F
@@ -124,7 +123,9 @@ class TestTaskFields(unittest.TestCase):
         f = F.build(CheckOutput(check_id="pagespeed", severity="unavailable",
                                 examined="x", observed="y"), PROFILE)
         self.assertEqual(f.owner, "swa")
-        self.assertEqual(f.plain.title, "Not measured this scan")
+        self.assertEqual(f.plain.title, "Your page speed")
+        self.assertIn("was not measured", f.plain.why)
+        self.assertNotIn("One of the readings", f.plain.why)
 
     def test_swa_ownership_survives_a_passing_measurement(self):
         """Regression: prompt_testing emits severity='info', which maps to the
@@ -154,7 +155,8 @@ class TestTaskFields(unittest.TestCase):
         self.assertEqual(f.owner, "swa")
         self.assertIsNone(f.impact)
         self.assertIsNone(f.effort_minutes)
-        self.assertEqual(f.plain.title, "Not measured this scan")
+        self.assertEqual(f.plain.title, "Our visibility testing")
+        self.assertIn("was not measured", f.plain.why)
         self.assertNotIn("fixed set of buyer questions", f.plain.do)
 
     def test_client_checks_still_get_outcome_driven_copy(self):
@@ -162,7 +164,7 @@ class TestTaskFields(unittest.TestCase):
         f = F.build(CheckOutput(check_id="pagespeed", severity="pass",
                                 examined="x", observed="y"), PROFILE)
         self.assertEqual(f.owner, "client")
-        self.assertIn("Keep", f.plain.title)
+        self.assertIn("Leave your page speed", f.plain.title)
         self.assertNotIn("Speed up", f.plain.title)
 
     def test_prompt_testing_is_one_finding_that_we_own(self):
@@ -171,15 +173,128 @@ class TestTaskFields(unittest.TestCase):
         self.assertTrue(F.PLAIN_GAP["prompt_testing"].title.startswith("We "))
         self.assertTrue(F.PLAIN_GAP["prompt_testing"].do.startswith("We "))
 
-    def test_stored_task_fields_win_over_the_tables(self):
-        """A finding sold at 15 minutes stays 15 minutes."""
+    def test_stored_effort_and_owner_win_impact_follows_severity(self):
+        """A finding sold at 15 minutes stays 15 minutes. The stored impact
+        does not: this row is severity high with impact 'low' left over from
+        when every pagespeed gap was medium and a backfill could say low."""
         row = {"check_id": "pagespeed", "item_key": "", "severity": "high",
                "examined": "x", "observed": "y", "remediation": "",
                "evidence": {}, "impact": "low", "effort_minutes": 15,
                "owner": "client", "deduction": 3.0}
         f = F.from_row(row, PROFILE)
-        self.assertEqual((f.impact, f.effort_minutes), ("low", 15))
+        self.assertEqual((f.impact, f.effort_minutes, f.owner),
+                         ("high", 15, "client"))
         self.assertEqual(f.deduction, 3.0)
+
+    def test_impact_follows_how_bad_the_reading_is(self):
+        """The same check can rank two readings differently."""
+        def impact(check, severity, item=""):
+            return F.build(CheckOutput(
+                check_id=check, item_key=item, severity=severity,
+                examined="x", observed="y"), PROFILE).impact
+
+        self.assertEqual(impact("pagespeed", "high", "mobile:LCP"), "high")
+        self.assertEqual(impact("pagespeed", "medium", "mobile:LCP"), "medium")
+        self.assertEqual(impact("pagespeed", "low", "mobile:LCP"), "low")
+        self.assertEqual(impact("pagespeed", "pass", "mobile:CLS"), "low")
+        self.assertEqual(impact("answer_first", "low"), "low")
+        self.assertEqual(impact("answer_first", "high"), "high")
+        self.assertEqual(impact("llms_txt", "medium"), "medium")
+        self.assertEqual(impact("llms_txt", "low"), "low")
+        self.assertEqual(impact("prompt_testing", "info"), "low")
+        self.assertNotEqual(
+            impact("pagespeed", "high", "desktop:TBT"),
+            impact("pagespeed", "medium", "mobile:TBT"))
+
+    def test_desktop_gap_does_not_use_the_phone_title(self):
+        phone = F.build(CheckOutput(
+            check_id="pagespeed", item_key="mobile:TBT", severity="high",
+            examined="x", observed="y"), PROFILE)
+        desk = F.build(CheckOutput(
+            check_id="pagespeed", item_key="desktop:TBT", severity="high",
+            examined="x", observed="y"), PROFILE)
+        self.assertIn("phone", phone.plain.title.lower())
+        self.assertIn("phone", phone.plain.why.lower())
+        self.assertIn("computer", desk.plain.title.lower())
+        self.assertIn("computer", desk.plain.why.lower())
+        self.assertNotIn("phone", desk.plain.title.lower())
+        self.assertNotIn("phone", desk.plain.why.lower())
+        # A desktop pass is still a pass, not a speed-up task.
+        passed = F.build(CheckOutput(
+            check_id="pagespeed", item_key="desktop:CLS", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        self.assertEqual(passed.plain.title,
+                         "Leave page speed on a computer as it is")
+        self.assertNotIn("Speed up", passed.plain.title)
+
+    def test_pass_titles_agree_with_their_subject(self):
+        details = F.build(CheckOutput(
+            check_id="entity_consistency", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        pages = F.build(CheckOutput(
+            check_id="answer_first", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        access = F.build(CheckOutput(
+            check_id="ai_crawler", severity="pass",
+            examined="x", observed="y"), PROFILE)
+        self.assertEqual(details.plain.title,
+                         "Leave your business details as they are")
+        self.assertEqual(pages.plain.title,
+                         "Leave your question-and-answer pages as they are")
+        self.assertEqual(access.plain.title,
+                         "Keep letting assistants read your site")
+        self.assertNotIn("as it is", details.plain.title)
+        self.assertNotIn("as it is", access.plain.title)
+
+    def test_search_setup_does_not_borrow_the_speed_sentence(self):
+        passed = F.build(CheckOutput(
+            check_id="pagespeed", item_key="seo:is-crawlable",
+            severity="pass", examined="x", observed="y"), PROFILE)
+        gap = F.build(CheckOutput(
+            check_id="pagespeed", item_key="seo:document-title",
+            severity="medium", examined="x", observed="y"), PROFILE)
+        category = F.build(CheckOutput(
+            check_id="pagespeed", item_key="desktop:seo_category",
+            severity="info", examined="x", observed="y"), PROFILE)
+        self.assertEqual(passed.plain.title, "Leave the page open to search")
+        self.assertEqual(gap.plain.title, "Give the page a clear title")
+        self.assertIn(PROFILE.category, gap.plain.why)
+        self.assertEqual(category.plain.title,
+                         "Leave how search engines read the page as it is")
+        for f in (passed, gap, category):
+            blob = f"{f.plain.title} {f.plain.why}".lower()
+            self.assertNotIn("page speed", blob)
+            self.assertNotIn("speed up", blob)
+            self.assertNotIn("on phones", blob)
+        for item_key, copy in F.PAGESPEED_SEO_GAP.items():
+            built = F.build(CheckOutput(
+                check_id="pagespeed", item_key=item_key, severity="medium",
+                examined="x", observed="y"), PROFILE)
+            blob = " ".join([built.plain.title, built.plain.why,
+                             built.plain.do, built.plain.payoff]).lower()
+            for banned in BANNED_IN_PLAIN:
+                self.assertNotIn(banned, blob, f"{item_key}: {banned!r}")
+            self.assertNotIn("speed up", built.plain.title.lower(), item_key)
+            self.assertNotIn("page speed", blob, item_key)
+
+    def test_unmeasured_plain_names_the_failed_reading(self):
+        desktop = F.build(CheckOutput(
+            check_id="pagespeed", item_key="desktop:error",
+            severity="unavailable", examined="x", observed="y"), PROFILE)
+        mobile = F.build(CheckOutput(
+            check_id="pagespeed", item_key="mobile:error",
+            severity="unavailable", examined="x", observed="y"), PROFILE)
+        links = F.build(CheckOutput(
+            check_id="rank", item_key="endpoint:backlinks",
+            severity="unavailable", examined="x", observed="y"), PROFILE)
+        self.assertEqual(desktop.plain.title, "Page speed on a computer")
+        self.assertEqual(mobile.plain.title, "Page speed on a phone")
+        self.assertEqual(links.plain.title, "Which other sites link to you")
+        for f in (desktop, mobile, links):
+            self.assertIn(f.plain.title, f.plain.why)
+            self.assertIn("was not measured", f.plain.why)
+            self.assertNotIn("One of the readings", f.plain.why)
+            self.assertNotEqual(f.plain.title, "Not measured this scan")
 
 
 class TestScorePresentation(unittest.TestCase):
@@ -301,46 +416,6 @@ class TestProfileResolutionPathsAgree(unittest.TestCase):
               "evidence": {"types": ["WebSite", "BreadcrumbList"]}}],
             "example.com")
         self.assertEqual(p.category, "business")
-
-
-class TestCitedScrapingCoupling(unittest.TestCase):
-    """Cited parses Sightline's HTML report and defaults severity to "info"
-    when its regex misses. "info" maps to status 'pass' and is filtered out
-    of the recommendation list, so a missed match does not error -- it tells
-    every Cited client their site is clean.
-
-    These tests use Cited's ACTUAL regexes, copied from
-    /opt/cited/src/lib/sightline/dashboard.ts, so a class rename here fails
-    here instead of silently in Cited. Delete this class only when Cited
-    reads /report/<id>/findings.json instead of scraping.
-    """
-
-    # dashboard.ts:81
-    SEV_RE = re.compile(r"""class=['"]sev['"][^>]*>([\s\S]*?)</span>""")
-
-    def _finding(self, severity="high"):
-        from sightline.render.html import _task_meta
-        return _task_meta(F.build(CheckOutput(
-            check_id="ai_crawler", severity=severity,
-            examined="x", observed="y"), PROFILE))
-
-    def test_severity_is_still_scrapable(self):
-        for severity in ("critical", "high", "medium", "low", "pass",
-                         "info", "unavailable"):
-            m = self.SEV_RE.search(self._finding(severity))
-            self.assertIsNotNone(m, f"{severity}: Cited would default to info")
-            self.assertEqual(m.group(1).strip(), severity)
-
-    def test_impact_pill_does_not_satisfy_the_severity_regex(self):
-        """The impact pill is a different axis; it must not be mistaken for
-        severity, or Cited would score business impact as severity."""
-        from sightline.render.html import _impact_pill
-        self.assertIsNone(self.SEV_RE.search(_impact_pill("high")))
-
-    def test_the_reason_is_documented_where_someone_would_delete_it(self):
-        from sightline.render.html import _task_meta
-        self.assertIn("Cited", _task_meta.__doc__)
-        self.assertIn("findings.json", _task_meta.__doc__)
 
 
 class TestPeerMedianIsCached(unittest.TestCase):
