@@ -65,6 +65,9 @@ def export_scan(scan_id: int, weight_version_id: int) -> dict:
             "effort_minutes": f.effort_minutes,
             "owner": f.owner,
         })
+    # One finding still names the category. A report does not repeat it
+    # on every card. Idempotent if the phrase is already gone.
+    findings_mod.thin_repeated_category(out_findings, profile.category)
 
     seo_metrics = scan.get("seo_metrics") or {}
     return {
