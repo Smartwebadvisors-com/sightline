@@ -11,7 +11,7 @@ from flask import (Flask, Response, abort, jsonify, redirect,
 
 from .. import db
 from .. import unavailable
-from ..pipeline import create_pending_scan
+from ..pipeline import begin_scan
 from ..render.html import render_scan
 from ..render.json_export import export_scan
 from ..scoring import apply as apply_mod
@@ -55,7 +55,7 @@ def create_app() -> Flask:
     def new_scan():
         raw = (request.form.get("url") or "").strip()
         try:
-            scan_id = create_pending_scan(raw)
+            scan_id, started = begin_scan(raw)
         except ValueError as e:
             return render_template(
                 "list.html",
@@ -64,8 +64,9 @@ def create_app() -> Flask:
                 prefill=raw,
                 weights_version=weights_mod.WEIGHTS_VERSION,
             ), 400
-        scan = db.scan(scan_id)
-        runner.submit(scan_id, scan["url"])
+        if started:
+            scan = db.scan(scan_id)
+            runner.submit(scan_id, scan["url"])
         return redirect(url_for("report", scan_id=scan_id))
 
     @app.get("/report/<int:scan_id>")
@@ -77,8 +78,9 @@ def create_app() -> Flask:
             return render_template("pending.html", scan=scan), 200
         if scan["status"] == "failed":
             # Never `scan.error` directly: rows written before
-            # unavailable.py hold raw tracebacks, and Cited scrapes this
-            # page's banner into its own user-facing error.
+            # unavailable.py hold raw tracebacks. The client sentence is
+            # failure_message(); the findings.json 409 body carries the
+            # same sentence so Cited does not read this page.
             return render_template(
                 "failed.html", scan=scan,
                 message=unavailable.failure_message(scan)), 200
@@ -98,7 +100,12 @@ def create_app() -> Flask:
         if not scan:
             abort(404)
         if scan["status"] != "complete":
-            return jsonify({"error": f"scan is {scan['status']}"}), 409
+            body = {"error": f"scan is {scan['status']}"}
+            # The sentence a client may read. Same whitelist as the failure
+            # page. Running and queued scans have no failure to explain.
+            if scan["status"] == "failed":
+                body["reason"] = unavailable.failure_message(scan)
+            return jsonify(body), 409
         wv_id = _current_wv_id()
         # Cited polls this. apply_to_scan rewrites one score row per finding
         # on every call, so score only when this scan is not already current

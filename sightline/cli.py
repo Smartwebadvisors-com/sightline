@@ -158,9 +158,9 @@ def cmd_backfill_seo(args) -> None:
 
 def cmd_migrate_findings(args) -> None:
     """Backfill impact/effort_minutes/owner and the brand/category profile
-    for scans that predate them. Values come from findings.TASK_GAP, so the
-    tables in findings.py stay the single source of them — no task value or
-    copy string is ever written by hand or by SQL."""
+    for scans that predate them. Effort and owner come from TASK_GAP.
+    Impact comes from the row's severity, the same derivation build() uses,
+    so a backfill cannot freeze every pagespeed gap at medium."""
     from . import findings as findings_mod
 
     if args.refresh_profiles:
@@ -207,8 +207,9 @@ def cmd_migrate_findings(args) -> None:
                 print(f"  ! scan {sc['id']} {r['check_id']}: {e}",
                       file=sys.stderr)
                 continue
-            updates.append((task.impact, task.effort_minutes, task.owner,
-                            r["id"]))
+            impact = (None if outcome == findings_mod.UNMEASURED
+                      else findings_mod.impact_for_severity(r["severity"]))
+            updates.append((impact, task.effort_minutes, task.owner, r["id"]))
         if not args.dry_run:
             db.set_finding_task_fields(updates)
         total += len(updates)

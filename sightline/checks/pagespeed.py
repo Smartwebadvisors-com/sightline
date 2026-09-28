@@ -34,10 +34,13 @@ def _fetch(url: str, strategy: str) -> tuple[dict | None, str]:
     params = {"url": url, "strategy": strategy,
               "key": settings.pagespeed_api_key,
               "category": ["performance", "seo"]}
+    # Cited waits a couple of minutes. Two pages, two strategies, and three
+    # minute-long tries do not fit in that wait, so a slow answer is given
+    # up and recorded as not measured.
     r, why = unavailable.send_with_retry(
-        lambda: requests.get(PSI_URL, params=params,
-                             timeout=settings.http_timeout * 3),
+        lambda: requests.get(PSI_URL, params=params, timeout=30),
         service=service,
+        attempts=2,
     )
     if r is None:
         return None, why

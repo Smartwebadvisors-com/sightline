@@ -42,6 +42,23 @@ from . import unavailable as unavailable_mod
 IMPACTS = ("high", "medium", "low")
 OWNERS = ("client", "swa")
 
+
+def impact_for_severity(severity: str) -> str:
+    """How bad this reading is, not which check produced it.
+
+    A pagespeed gap used to be medium on every site, an answer-first gap
+    high, an llms.txt gap low, and every pass low — the check's standing
+    task, copied onto the row. Two sites with different measurements then
+    ranked the same. critical and high are high; medium stays medium; a
+    low gap, a pass, and an info line are low, because the measurement is
+    not bad. Unmeasured stays None and never calls this.
+    """
+    if severity in ("critical", "high"):
+        return "high"
+    if severity == "medium":
+        return "medium"
+    return "low"
+
 # What the copy has to distinguish, which is not the same axis as severity.
 GAP = "gap"
 PASS = "pass"
@@ -211,22 +228,46 @@ SUBJECT = {
     "prompt_testing":     "our visibility testing",
 }
 
+# Which reading failed, in the same plain words as SUBJECT. Keyed on
+# (check_id, item_key) only where one check takes more than one reading.
+# Anything else falls back to SUBJECT, so "unavailable" and a blank key
+# still name the check. Never a metric code, a file name, or an exception.
+READING = {
+    ("pagespeed", "desktop:error"): "page speed on a computer",
+    ("pagespeed", "mobile:error"): "page speed on a phone",
+    ("rank", "endpoint:keywords"): "which searches you show up for",
+    ("rank", "endpoint:backlinks"): "which other sites link to you",
+}
+
+# The shared pass body. The title is chosen per check in PASS_TITLE,
+# because one "Keep {subject} as it is" line cannot agree with a plural
+# subject and cannot hold "the access assistants have to your site".
 PASS_COPY = Copy(
-    title="Keep {subject} as it is",
+    title="",
     why=("{brand} already has this right. It is one of the things an assistant "
          "checks before it will describe a {category} with any confidence."),
     do="Nothing to change. Keep it this way the next time the site is rebuilt.",
     payoff="Nothing here is holding {brand} back.",
 )
 
+PASS_TITLE = {
+    "ai_crawler": "Keep letting assistants read your site",
+    "structured_data": "Leave the machine-readable description as it is",
+    "entity_consistency": "Leave your business details as they are",
+    "answer_first": "Leave your question-and-answer pages as they are",
+    "llms_txt": "Leave your assistant summary page as it is",
+    "pagespeed": "Leave your page speed as it is",
+    "rank": "Leave your search footprint as it is",
+}
+
 # Rule 10. This is not a finding and must not read like one: no gap, no
 # instruction, no claim about the site — only a statement that a reading
 # did not come back and that it costs the client nothing.
 UNMEASURED_COPY = Copy(
-    title="Not measured this scan",
-    why=("One of the readings we take for {brand} did not come back this "
-         "time. That is a gap in our measurement, not something we found on "
-         "your site, so we will not call it either good or bad."),
+    title="{reading_cap}",
+    why=("{reading_cap} was not measured for {brand} this scan. That is a "
+         "gap in our measurement, not something we found on your site, so we "
+         "will not call it either good or bad."),
     do="We'll pick it up next time. Nothing for you to do.",
     payoff=("Your score isn't affected — it is worked out only from what we "
             "could actually measure."),
@@ -333,6 +374,108 @@ TASK_GAP: dict[str, Task] = {
     "prompt_testing":     Task("high",    90, "swa"),
 }
 
+# Not a PLAIN_GAP key. _all_findings() walks those keys as check ids, and
+# "pagespeed:desktop" is not a check. Selected in _copy_and_task when the
+# item is a desktop gap; mobile keeps the pagespeed entry above.
+PAGESPEED_DESKTOP_GAP = Copy(
+    title="Speed up your pages on a computer",
+    why=("{brand_s} pages are slow to load on a computer. Slow {category} "
+         "sites get abandoned by customers before the page paints, and get "
+         "read less often by the automated readers that gather sources."),
+    do=("Have your developer compress the images and remove unused code on "
+        "your slowest pages, starting with the homepage."),
+    payoff="Faster pages get seen by more customers and read more often by assistants.",
+)
+
+# Search-setup readings ride on the pagespeed check, but they are not speed.
+# A crawlability gap used to say "Speed up your pages on phones" and then
+# collapse into that card. Not PLAIN_GAP keys — see _copy_and_task.
+_SEO_DO = ("Ask whoever maintains your site to correct this on the page "
+           "template, then check the search result for that address.")
+_SEO_PAYOFF = "Search engines can show the page you meant, to the customer who asked."
+
+PAGESPEED_SEO_GAP = {
+    "seo:is-crawlable": Copy(
+        title="Let search engines read this page",
+        why=("{brand_s} site tells search engines not to read it, so a "
+             "{category} customer searching for you never reaches the page."),
+        do="Ask your developer to allow search engines to read the pages you want found.",
+        payoff="The pages you want found can show up in search.",
+    ),
+    "seo:robots-txt": Copy(
+        title="Give search engines clear instructions",
+        why=("Search engines are missing the instructions for which pages on "
+             "{brand_s} site they may read, so they may skip pages a "
+             "{category} customer is looking for."),
+        do="Ask your developer to publish those instructions and allow the pages you want found.",
+        payoff="The pages you want found are the ones that get visited.",
+    ),
+    "seo:canonical": Copy(
+        title="Give each page one address",
+        why=("The same {brand} page is available at more than one address, so "
+             "search engines split its credit and a {category} customer may "
+             "be shown the wrong one."),
+        do="Ask your developer to point every version of a page at the single address you want found.",
+        payoff="The address you chose is the one that gets the credit.",
+    ),
+    "seo:hreflang": Copy(
+        title="Say which language each page is for",
+        why=("Pages on {brand_s} site do not say which language or country "
+             "they are for, so a {category} customer can be shown the wrong "
+             "version."),
+        do="Ask your developer to mark the language of each version of the page.",
+        payoff="The customer sees the version written for them.",
+    ),
+    "seo:http-status-code": Copy(
+        title="Serve a working page at this address",
+        why=("{brand_s} address answers with an error instead of a page, so "
+             "a {category} customer and the search engines both leave."),
+        do="Ask your developer to make that address return the page, or point the link at a page that exists.",
+        payoff="The address you publish is a page someone can open.",
+    ),
+    "seo:viewport": Copy(
+        title="Make the page fit a phone screen",
+        why=("{brand_s} page does not fit a phone screen, so a {category} "
+             "customer has to pinch and scroll sideways and often gives up."),
+        do="Ask your developer to make the layout match the width of a phone.",
+        payoff="A customer on a phone can read the page without fighting it.",
+    ),
+    "seo:document-title": Copy(
+        title="Give the page a clear title",
+        why=("The page on {brand_s} site has no clear title, so a search "
+             "result cannot tell a {category} customer what they will get."),
+        do="Ask your developer to put a short, specific title on the page.",
+        payoff="The search result says what the page is before anyone clicks.",
+    ),
+    "seo:meta-description": Copy(
+        title="Summarize the page for search results",
+        why=("Search results for {brand} have nothing short to show under the "
+             "title, so a {category} customer sees a scrap of text from the "
+             "page instead of a reason to visit."),
+        do="Ask your developer to add a one- or two-sentence summary of the page.",
+        payoff="The result under the title is a reason to click.",
+    ),
+}
+
+PAGESPEED_SEO_GAP_DEFAULT = Copy(
+    title="Fix how search engines read this page",
+    why=("{brand_s} page is hard for search engines to read, so a {category} "
+         "customer searching for you may never be offered it."),
+    do=_SEO_DO,
+    payoff=_SEO_PAYOFF,
+)
+
+PAGESPEED_SEO_PASS_TITLE = {
+    "seo:is-crawlable": "Leave the page open to search",
+    "seo:robots-txt": "Leave the instructions for search engines as they are",
+    "seo:canonical": "Leave each page at one address",
+    "seo:hreflang": "Leave the language marking as it is",
+    "seo:http-status-code": "Leave this address serving a real page",
+    "seo:viewport": "Leave the page fitting a phone screen",
+    "seo:document-title": "Leave the page title as it is",
+    "seo:meta-description": "Leave the search-result summary as it is",
+}
+
 TASK_PASS = Task("low", 0, "client")
 # We re-measure and the client does nothing, so there is nothing to rate or
 # quote. It used to be ("low", 15, "swa"), which put a business impact and a
@@ -391,13 +534,44 @@ class Finding:
         return _OUTCOME.get(self.severity, GAP)
 
 
-def _fill(copy: Copy, profile: ClientProfile, subject: str) -> Plain:
+def _reading_name(check_id: str, item_key: str) -> str:
+    return (READING.get((check_id, item_key or ""))
+            or SUBJECT.get(check_id, "this reading"))
+
+
+def _fill(copy: Copy, profile: ClientProfile, subject: str,
+          reading: str) -> Plain:
+    reading_cap = reading[:1].upper() + reading[1:] if reading else reading
+
     def f(s: str) -> str:
         return s.format(brand=profile.brand,
                         brand_s=_possessive(profile.brand),
-                        category=profile.category, subject=subject)
+                        category=profile.category, subject=subject,
+                        reading=reading, reading_cap=reading_cap)
     return Plain(title=f(copy.title), why=f(copy.why), do=f(copy.do),
                  payoff=f(copy.payoff))
+
+
+def _pagespeed_is_seo(item_key: str) -> bool:
+    key = item_key or ""
+    return key.startswith("seo:") or key.endswith(":seo_category")
+
+
+def _pass_copy(check_id: str, item_key: str) -> Copy:
+    """A grammatical pass title for this check. Page-speed search setup
+    does not borrow the speed sentence."""
+    key = item_key or ""
+    if check_id == "pagespeed" and _pagespeed_is_seo(key):
+        title = (PAGESPEED_SEO_PASS_TITLE.get(key)
+                 or "Leave how search engines read the page as it is")
+    elif check_id == "pagespeed" and key.startswith("desktop:"):
+        title = "Leave page speed on a computer as it is"
+    elif check_id == "pagespeed" and key.startswith("mobile:"):
+        title = "Leave page speed on phones as it is"
+    else:
+        title = PASS_TITLE.get(check_id) or "Leave this as it is"
+    return Copy(title=title, why=PASS_COPY.why, do=PASS_COPY.do,
+                payoff=PASS_COPY.payoff)
 
 
 def _copy_and_task(check_id: str, item_key: str,
@@ -413,6 +587,16 @@ def _copy_and_task(check_id: str, item_key: str,
     # paths agree on the owner anyway — unmeasured work is always ours.
     if outcome == UNMEASURED:
         return UNMEASURED_COPY, TASK_UNMEASURED
+    # Search-setup readings are not speed, even though the check is
+    # pagespeed. A pass is handled below. A gap must not say "phones".
+    if check_id == "pagespeed" and _pagespeed_is_seo(item_key) and outcome == GAP:
+        copy = PAGESPEED_SEO_GAP.get(item_key) or PAGESPEED_SEO_GAP_DEFAULT
+    # Desktop and mobile speed are different readings. They used to share
+    # the phone template, so desktop:TBT shipped as "Speed up your pages
+    # on phones". A pass still uses _pass_copy below. Not a PLAIN_GAP key.
+    elif (check_id == "pagespeed" and outcome == GAP
+            and str(item_key).startswith("desktop:")):
+        copy = PAGESPEED_DESKTOP_GAP
     # Work we perform is ours whatever the measurement said. A standing task
     # does not become a client instruction because this week's sample came
     # back fine, so ownership is a property of the check and is resolved
@@ -422,7 +606,7 @@ def _copy_and_task(check_id: str, item_key: str,
     if task is not None and task.owner == "swa":
         return copy, task
     if outcome == PASS:
-        return PASS_COPY, TASK_PASS
+        return _pass_copy(check_id, item_key), TASK_PASS
     if outcome == UNMEASURED:
         return UNMEASURED_COPY, TASK_UNMEASURED
     if copy is None or task is None:
@@ -433,19 +617,46 @@ def _copy_and_task(check_id: str, item_key: str,
     return copy, task
 
 
+def _note_sample(plain: Plain, evidence: dict, outcome: str) -> Plain:
+    """A gap that showed up on more than one sampled page says how many."""
+    if outcome != GAP:
+        return plain
+    checked = evidence.get("pages_checked")
+    hit = evidence.get("pages_with_gap")
+    if not isinstance(checked, int) or not isinstance(hit, int):
+        return plain
+    if checked < 2 or hit < 1:
+        return plain
+    return Plain(
+        title=plain.title,
+        why=plain.why + f" This showed up on {hit} of {checked} pages.",
+        do=plain.do,
+        payoff=plain.payoff,
+    )
+
+
 def build(obs: CheckOutput, profile: ClientProfile) -> Finding:
     """The single seam. technical and plain are produced here, together, or
     not at all."""
     outcome = _OUTCOME.get(obs.severity, GAP)
     copy, task = _copy_and_task(obs.check_id, obs.item_key, outcome)
     subject = SUBJECT.get(obs.check_id, "this")
+    # Impact follows the measurement. Effort and owner stay with the check:
+    # the minutes and who does the work do not change because LCP was poor
+    # rather than middling. Unmeasured keeps both counts empty (rule 10).
+    impact = (None if outcome == UNMEASURED
+              else impact_for_severity(obs.severity))
     return Finding(
         check_id=obs.check_id,
         item_key=obs.item_key,
         severity=obs.severity,
         technical=Technical(title=obs.examined, detail=obs.observed),
-        plain=_fill(copy, profile, subject),
-        impact=task.impact,
+        plain=_note_sample(
+            _fill(copy, profile, subject, _reading_name(obs.check_id, obs.item_key)),
+            obs.evidence or {},
+            outcome,
+        ),
+        impact=impact,
         effort_minutes=task.effort_minutes,
         owner=task.owner,
         remediation=obs.remediation,
@@ -484,19 +695,18 @@ def from_row(row: dict, profile: ClientProfile) -> Finding:
         item_key=row.get("item_key") or "", evidence=row.get("evidence") or {},
     )
     f = build(obs, profile)
-    # Stored task fields win over the tables: a finding sold at 15 minutes
-    # stays 15 minutes even if we later re-estimate the check.
+    # Effort and owner were sold with the scan: a finding quoted at 15
+    # minutes stays 15 minutes even if we later re-estimate the check.
+    # Impact is not one of those. It is how bad this reading was, derived
+    # above from severity, so a stored "medium" on every pagespeed row
+    # cannot flatten a poor result and a middling one into the same rank.
     #
-    # Except when nothing was measured. Those rows were written before rule
-    # 10 and were backfilled with impact='low', effort=15, owner='swa' —
-    # real values for a task that does not exist. Letting them win would
+    # Unmeasured rows were written before rule 10 and backfilled with
+    # impact='low', effort=15, owner='swa'. Letting any of that win would
     # re-inflate a failed measurement into a finding, and because `replace`
-    # re-runs __post_init__, it would raise instead: every historical
-    # report holding a PageSpeed timeout would 500 on render. Nothing was
-    # sold here, so there is nothing for a stored value to protect.
+    # re-runs __post_init__, it would raise instead. Nothing was sold
+    # there, so there is nothing for a stored value to protect.
     if f.outcome != UNMEASURED:
-        if row.get("impact") in IMPACTS:
-            f = replace(f, impact=row["impact"])
         if row.get("effort_minutes") is not None:
             f = replace(f, effort_minutes=int(row["effort_minutes"]))
         if row.get("owner") in OWNERS:
@@ -545,6 +755,56 @@ def peer_sentence(score: float | None, peers: dict | None) -> str:
             "below" if score < median else "level with")
     return (f"That is {side} the median of {median:.0f} for the {n} other "
             f"sites we have scanned.")
+
+
+# Longer clauses first. Later findings keep a real sentence and drop the
+# trade. Substituting the word "business" produced "business work".
+# Cited applies the same clauses to feeds that were saved before this.
+_CATEGORY_CLAUSES = (
+    ("what a {category} offers", "what you offer"),
+    ("that you are a {category}", "what you do"),
+    ("describe a {category}", "describe you"),
+    ("for a {category}", "about you"),
+    ("Slow {category} sites", "Slow sites"),
+    ("a {category} customer", "a customer"),
+    ("{category} options", "options"),
+    ("{category} work", "your work"),
+)
+
+
+def without_category(text: str, category: str) -> str:
+    """Drop the trade from one sentence. A clause we do not recognise stays,
+    so an unknown wording is never rewritten into 'business'."""
+    for pattern, replacement in _CATEGORY_CLAUSES:
+        text = text.replace(pattern.format(category=category), replacement)
+    return text
+
+
+def thin_repeated_category(entries: list[dict], category: str) -> None:
+    """Keep the category phrase on the first finding that uses it.
+
+    `build()` still names the category on every finding, so one finding
+    stays specific. A full report was repeating it once per finding.
+    Later findings use the clause list above. The category "business" is
+    left untouched: rewriting it would change "your business details".
+    """
+    phrase = (category or "").strip()
+    if not phrase or phrase.lower() == "business":
+        return
+    seen = False
+    for entry in entries:
+        plain = entry.get("plain") or {}
+        blob = " ".join(str(plain.get(key) or "")
+                        for key in ("title", "why", "do", "payoff"))
+        if phrase not in blob:
+            continue
+        if not seen:
+            seen = True
+            continue
+        for key in ("title", "why", "do", "payoff"):
+            text = plain.get(key)
+            if isinstance(text, str):
+                plain[key] = without_category(text, phrase)
 
 
 def disclaimer(profile: ClientProfile) -> str:

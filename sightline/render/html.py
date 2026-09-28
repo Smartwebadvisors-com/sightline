@@ -68,24 +68,15 @@ def _task_meta(f) -> str:
     """Impact, effort and owner as three labelled values. Never fused into a
     phrase — COPY.md rule 4.
 
-    Also carries severity in a `class="sev"` span. That is NOT redundant with
-    impact: severity is the scoring input, impact is the business consequence,
-    and this view is internal so both are legitimate here. It is also load-
-    bearing for Cited, which parses this report with
-    /class=['"]sev['"][^>]*>(.*?)<\/span>/ and DEFAULTS TO "info" when the
-    match fails — see /opt/cited/src/lib/sightline/dashboard.ts. A silent
-    default of "info" makes every check read 'pass' and empties the
-    recommendation list, so removing this span tells every Cited client their
-    site is clean. Do not remove it until Cited reads findings.json instead;
-    tests/test_findings_copy.py pins it.
+    Severity is a scoring input and is not printed. Cited reads findings.json,
+    including the failure reason on a scan that did not finish, so this view
+    is not a feed.
     """
     return (
         "<div class='task'>"
         f"<span><b>Impact</b> {_esc(f.impact)}</span>"
         f"<span><b>Effort</b> {f.effort_minutes} min</span>"
         f"<span><b>Owner</b> {_esc(OWNER_LABEL.get(f.owner, f.owner))}</span>"
-        f"<span><b>Severity</b> "
-        f'<span class="sev">{_esc(f.severity)}</span></span>'
         "</div>"
     )
 
@@ -457,28 +448,10 @@ def render_scan(scan_id: int, weight_version_id: int) -> str:
             p.append(_task_meta(f))
             p.append("</div>")
 
-    # Measurements that did not happen. Deliberately NOT rendered as
-    # `class='finding ...'`, and deliberately in its own <h2> section.
-    #
-    # Cited scrapes this report with
-    # /<div class='finding[^']*'>([\s\S]*?)<\/div>\s*(?=<div class='finding|<h2|<\/body>)/
-    # and turns every block it matches into a check AND — for any severity
-    # that isn't literally 'pass' or 'info' — a recommendation reading
-    # "Fix the finding on the page, then rescan in Sightline."
-    # 'unavailable' does not match /pass|info/, so while these blocks were
-    # findings, a PageSpeed timeout shipped to every Cited client as a
-    # remediation CTA. No severity string avoids that: the one value that
-    # keeps Cited off green ('unavailable') is also the one that makes it
-    # emit the CTA. So these blocks are placed where Cited's block regex
-    # cannot start, and carry none of the class names it reads
-    # ('sev', 'body', 'remed') — it sees nothing rather than something
-    # wrong. The <h2> matters too: inline between two finding divs, the
-    # lookahead makes the PRECEDING block swallow this content. Both are
-    # pinned in tests/test_unavailable.py against Cited's real regexes.
-    #
-    # Rename these classes to anything starting with 'finding' and you
-    # silently re-create the bug. Delete this section only when Cited
-    # reads /report/<id>/findings.json.
+    # Measurements that did not happen. Their own section, not a finding
+    # card: no impact, no effort, no remediation (COPY.md rule 10). The
+    # heading is the only place this view says "Not measured this scan".
+    # Cited reads findings.json, where plain names the reading that failed.
     if notmeasured:
         p.append("<h2>Not measured this scan "
                  "<span class='capscore'>no effect on any score</span></h2>")
