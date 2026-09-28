@@ -11,7 +11,7 @@ from flask import (Flask, Response, abort, jsonify, redirect,
 
 from .. import db
 from .. import unavailable
-from ..pipeline import create_pending_scan
+from ..pipeline import begin_scan
 from ..render.html import render_scan
 from ..render.json_export import export_scan
 from ..scoring import apply as apply_mod
@@ -55,7 +55,7 @@ def create_app() -> Flask:
     def new_scan():
         raw = (request.form.get("url") or "").strip()
         try:
-            scan_id = create_pending_scan(raw)
+            scan_id, started = begin_scan(raw)
         except ValueError as e:
             return render_template(
                 "list.html",
@@ -64,8 +64,9 @@ def create_app() -> Flask:
                 prefill=raw,
                 weights_version=weights_mod.WEIGHTS_VERSION,
             ), 400
-        scan = db.scan(scan_id)
-        runner.submit(scan_id, scan["url"])
+        if started:
+            scan = db.scan(scan_id)
+            runner.submit(scan_id, scan["url"])
         return redirect(url_for("report", scan_id=scan_id))
 
     @app.get("/report/<int:scan_id>")

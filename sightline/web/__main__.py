@@ -32,6 +32,11 @@ from .app import create_app  # noqa: E402
 
 
 def main() -> None:
+    # A restart kills the scan threads. Rows still marked running would
+    # make the next click wait on a scan that will never finish.
+    from .. import db
+
+    db.fail_running_scans()
     port = int(os.environ.get("SIGHTLINE_WEB_PORT", "5055"))
     app = create_app()
     print(f"sightline-web listening on 127.0.0.1:{port}", flush=True)

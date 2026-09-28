@@ -30,6 +30,7 @@ from .checks.base import ScanContext
 from .fetch import discovery
 from .fetch import http as fetch_http
 from .fetch import sample as sample_mod
+from .scan_slot import slot_decision
 from .scoring import apply as apply_mod
 from .scoring import seo as seo_mod
 from .scoring import weights as weights_mod
@@ -78,6 +79,22 @@ def create_pending_scan(url: str) -> int:
         canonical, dom,
         meta={"weights_version": weights_mod.WEIGHTS_VERSION},
     )
+
+
+def begin_scan(url: str) -> tuple[int, bool]:
+    """(scan_id, started). A second click joins the scan already in flight,
+    or the one that finished in the last few minutes."""
+    canonical = _validate(url)
+    row = db.latest_scan_for_url(canonical)
+    decision = slot_decision(row)
+    if decision == "reuse" and row:
+        return int(row["id"]), False
+    if decision == "abandon" and row:
+        db.complete_scan(
+            int(row["id"]), status="failed",
+            error=unavailable.DID_NOT_FINISH.format(scan_id=row["id"]),
+        )
+    return create_pending_scan(canonical), True
 
 
 def _build_context(url: str) -> ScanContext:

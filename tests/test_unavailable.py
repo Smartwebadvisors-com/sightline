@@ -96,14 +96,15 @@ class TestPageSpeedFailure(unittest.TestCase):
 
     def test_a_500_is_retried_then_recorded_as_unmeasured(self):
         out, calls, slept = self._run_psi()
-        # 3 attempts per strategy, two strategies.
-        self.assertEqual(len(calls), 6, "429/5xx must be retried")
+        # 2 attempts per strategy, two strategies. A third minute-long try
+        # does not fit in the wait Cited gives a scan.
+        self.assertEqual(len(calls), 4, "429/5xx must be retried")
         self.assertTrue(slept.called, "retries must back off")
         self.assertEqual(len(out), 2)
         for f in out:
             self.assertEqual(f.severity, "unavailable")
             self.assertEqual(f.remediation, "", "rule 10: no fix to offer")
-            self.assertIn("returned HTTP 500 after 3 attempts", f.observed)
+            self.assertIn("returned HTTP 500 after 2 attempts", f.observed)
 
     def test_no_severity_and_no_finding_survive_the_failure(self):
         """Nothing that scores, ranks or reads as a fault."""
@@ -129,7 +130,7 @@ class TestPageSpeedFailure(unittest.TestCase):
 
     def test_a_timeout_is_classified_not_quoted(self):
         out, calls, _ = self._run_psi(raises=requests.Timeout("timed out"))
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 4)
         for f in out:
             self.assertIn("did not respond in time", f.observed)
             assert_no_exception_text(self, f.observed, "psi timeout observed")

@@ -251,6 +251,37 @@ def scan(scan_id: int) -> dict | None:
         ).fetchone()
 
 
+def latest_scan_for_url(url: str) -> dict | None:
+    with conn() as c:
+        return c.execute(
+            """SELECT id, url, status, requested_at, completed_at
+                 FROM sightline_scans
+                WHERE url = %s
+                ORDER BY requested_at DESC
+                LIMIT 1""",
+            (url,),
+        ).fetchone()
+
+
+def fail_running_scans() -> int:
+    """Rows left 'running' after the process died. A restart has no worker
+    for them, and joining one would wait on a scan that will never finish."""
+    # Same sentence as unavailable.DID_NOT_FINISH, which is the only failure
+    # text a report is allowed to show.
+    lead = "This scan didn't finish. The reason is recorded in our server log — scan #"
+    with conn() as c:
+        cur = c.execute(
+            """UPDATE sightline_scans
+                  SET status = 'failed',
+                      completed_at = NOW(),
+                      error = %s || id::text || '.'
+                WHERE status IN ('running', 'queued')""",
+            (lead,),
+        )
+        c.commit()
+        return cur.rowcount
+
+
 def scores_for_scan(scan_id: int, weight_version_id: int) -> list[dict]:
     """Findings joined with their deductions under a given weight version."""
     with conn() as c:
