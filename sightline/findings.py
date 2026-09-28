@@ -617,6 +617,24 @@ def _copy_and_task(check_id: str, item_key: str,
     return copy, task
 
 
+def _note_sample(plain: Plain, evidence: dict, outcome: str) -> Plain:
+    """A gap that showed up on more than one sampled page says how many."""
+    if outcome != GAP:
+        return plain
+    checked = evidence.get("pages_checked")
+    hit = evidence.get("pages_with_gap")
+    if not isinstance(checked, int) or not isinstance(hit, int):
+        return plain
+    if checked < 2 or hit < 1:
+        return plain
+    return Plain(
+        title=plain.title,
+        why=plain.why + f" This showed up on {hit} of {checked} pages.",
+        do=plain.do,
+        payoff=plain.payoff,
+    )
+
+
 def build(obs: CheckOutput, profile: ClientProfile) -> Finding:
     """The single seam. technical and plain are produced here, together, or
     not at all."""
@@ -633,8 +651,11 @@ def build(obs: CheckOutput, profile: ClientProfile) -> Finding:
         item_key=obs.item_key,
         severity=obs.severity,
         technical=Technical(title=obs.examined, detail=obs.observed),
-        plain=_fill(copy, profile, subject,
-                    _reading_name(obs.check_id, obs.item_key)),
+        plain=_note_sample(
+            _fill(copy, profile, subject, _reading_name(obs.check_id, obs.item_key)),
+            obs.evidence or {},
+            outcome,
+        ),
         impact=impact,
         effort_minutes=task.effort_minutes,
         owner=task.owner,
